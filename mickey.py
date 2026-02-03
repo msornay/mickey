@@ -99,7 +99,8 @@ def sandbox_list() -> list[dict]:
     if result.returncode != 0:
         return []
     try:
-        return json.loads(result.stdout)
+        data = json.loads(result.stdout)
+        return data.get("vms", [])
     except json.JSONDecodeError:
         return []
 
