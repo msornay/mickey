@@ -61,7 +61,7 @@ def save_agents(agents: dict[str, Agent]):
 def sandbox_create(name: str, workspace: str) -> bool:
     """Create a Docker sandbox for the agent."""
     result = subprocess.run(
-        ["docker", "sandbox", "create", "claude", workspace, "--name", name],
+        ["docker", "sandbox", "create", "--name", name, "claude", workspace],
         capture_output=True,
         text=True,
     )
