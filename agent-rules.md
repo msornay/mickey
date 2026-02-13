@@ -55,7 +55,14 @@ git commit -m "<descriptive message>"
 git format-patch main --stdout > $WORKSPACE_DIR/patches/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
 ```
 
-This writes the patch to the synced directory so the host can pick it up.
+Verify the patch applies cleanly before moving on:
+```
+cd ~/work/<repo>
+git checkout main
+git am --check $WORKSPACE_DIR/patches/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
+```
+
+If it fails, fix your branch and regenerate the patch.
 
 ## Reviewing patches
 When asked to review a patch:
