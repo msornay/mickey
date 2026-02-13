@@ -23,6 +23,7 @@ case "$cmd" in
   hire)
     [[ $# -lt 1 ]] && { echo "Usage: mickey hire <name>"; exit 1; }
     docker sandbox create --name "$1" claude ~/src
+    docker sandbox exec "$1" bash -c 'chmod -R a-w ~/src && mkdir -p ~/src/patches ~/src/queue && chmod -R u+w ~/src/patches ~/src/queue'
     docker sandbox run "$1"
     ;;
   work)
