@@ -92,16 +92,14 @@ mickey work alice "Add auth across api-server and frontend. New /auth endpoint i
 
 Agent clones both repos, works on both, produces two patches.
 
-## Persistent agents & pulling updates
+## Persistent agents
 
 ```bash
 # Agent already has the clone, just send new work
 mickey work alice "In myproject: Add rate limiting to /auth."
-
-# If you merged patches and want agent to pick up latest
-mickey sh alice
-# then: cd ~/work/myproject && git pull ~/src/myproject main
 ```
+
+Agents automatically pull latest from `~/src/` before starting work or reviewing patches.
 
 ## State
 

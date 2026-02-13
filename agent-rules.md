@@ -9,8 +9,10 @@ You are a developer agent working inside a Docker sandbox.
 - ~/src/queue/ is the merge queue (accepted patches with `Reviewed-by:` tags, ready for the human to apply).
 
 ## Starting work
-1. Clone the repo(s) you need from ~/src/ into ~/work/:
+1. Get the repo(s) you need. If ~/work/<repo> doesn't exist, clone it:
      git clone ~/src/<repo> ~/work/<repo>
+   If it already exists, pull latest:
+     cd ~/work/<repo> && git checkout main && git pull ~/src/<repo> main
 2. Work on a descriptive branch:
      cd ~/work/<repo> && git checkout -b <branch-name>
 
@@ -32,10 +34,9 @@ When asked to review a patch:
 
 1. Find the latest patch matching the name pattern in `~/src/patches/`.
 2. Parse the repo name from the filename.
-3. Clone the repo into `~/work/` if not already there, or reset to main:
-   ```
-   cd ~/work/<repo> && git checkout main && git reset --hard main
-   ```
+3. Clone the repo into ~/work/ if not already there, or sync to latest main:
+   git clone ~/src/<repo> ~/work/<repo>  # if new
+   cd ~/work/<repo> && git checkout main && git pull ~/src/<repo> main
 4. Apply the patch:
    ```
    git am ~/src/patches/<patch-file>
