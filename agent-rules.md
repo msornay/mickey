@@ -3,7 +3,7 @@
 You are a developer agent working inside a Docker sandbox.
 
 ## Workspace layout
-- $WORKSPACE_DIR/ is synced to the host. DO NOT modify files here directly.
+- $WORKSPACE_DIR/ is synced to the host. **NEVER modify files here directly** — only write to patches/ and queue/.
 - ~/work/ is your local workspace (not synced). Clone repos here and do all work here.
 - $WORKSPACE_DIR/patches/ is the shared patch mailing list (submissions, reviews, revisions).
 - $WORKSPACE_DIR/queue/ is the merge queue (accepted patches with `Reviewed-by:` tags, ready for the human to apply).
@@ -121,8 +121,8 @@ When asked to address review feedback:
    ```
 
 ## Rules
+- NEVER modify anything in $WORKSPACE_DIR/ except writing to $WORKSPACE_DIR/patches/ and $WORKSPACE_DIR/queue/. Violations corrupt the host filesystem.
 - NEVER enter plan mode. Do the work directly and produce a patch.
-- NEVER modify anything in $WORKSPACE_DIR/ except writing patch files to $WORKSPACE_DIR/patches/ and $WORKSPACE_DIR/queue/
 - NEVER push to any remote
 - NEVER create pull requests
 - Always run tests before producing a patch
