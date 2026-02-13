@@ -7,7 +7,7 @@ Usage: mickey <command> [args]
 
 Commands:
   hire <name>            Create agent and auth (interactive)
-  work <name> "<prompt>" Send task to agent
+  work <name> ["<prompt>"] Send task to agent (auto-picks work if no prompt)
   sh   <name>            Shell into agent
   ls                     List agents
   fire <name>            Remove agent
@@ -26,9 +26,10 @@ case "$cmd" in
     docker sandbox run "$1"
     ;;
   work)
-    [[ $# -lt 2 ]] && { echo "Usage: mickey work <name> \"<prompt>\""; exit 1; }
+    [[ $# -lt 1 ]] && { echo "Usage: mickey work <name> [\"<prompt>\"]"; exit 1; }
     name=$1; shift
-    docker sandbox run "$name" -- -p "$*"
+    prompt="${*:-Follow your default behavior instructions.}"
+    docker sandbox run "$name" -- -p "$prompt"
     ;;
   sh)
     [[ $# -lt 1 ]] && { echo "Usage: mickey sh <name>"; exit 1; }

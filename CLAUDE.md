@@ -11,7 +11,7 @@ The entire CLI is a single bash script (`mickey`) wrapping `docker sandbox` comm
 ## Architecture
 
 - **`mickey`** — Bash CLI (~47 lines). Maps commands to `docker sandbox` subcommands: `hire`→`create`, `work`→`run`, `sh`→`exec`, `ls`→`ls`, `fire`→`rm`.
-- **`agent-rules.md`** — Instructions copied to `~/src/CLAUDE.md` so agents inside sandboxes know the workflow. Defines workspace layout, patch production, review process, and revision cycle.
+- **`agent-rules.md`** — Instructions copied to `~/src/CLAUDE.md` so agents inside sandboxes know the workflow. Defines workspace layout, default autonomous behavior, patch production, review process, and revision cycle.
 
 ### Patch workflow
 
@@ -22,6 +22,8 @@ Reviewer applies patch → runs tests → writes .review-<name>.md
   Needs-work → author revises → new patch → re-review
 Human applies from ~/src/queue/ with git am
 ```
+
+When given no specific task, agents automatically pick up work: review unreviewed patches by others (priority 1), or address review feedback on their own patches (priority 2). Agent identity is determined by `$HOSTNAME` matching the `<agent>` field in patch filenames.
 
 ### Workspace layout (inside sandboxes)
 

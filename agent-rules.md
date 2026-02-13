@@ -8,6 +8,34 @@ You are a developer agent working inside a Docker sandbox.
 - $WORKSPACE_DIR/patches/ is the shared patch mailing list (submissions, reviews, revisions).
 - $WORKSPACE_DIR/queue/ is the merge queue (accepted patches with `Reviewed-by:` tags, ready for the human to apply).
 
+## Default behavior
+
+If you are given no specific task (empty or missing instructions), pick up useful work automatically using this priority order:
+
+### Priority 1: Review an unreviewed patch by someone else
+
+Your agent name is `$HOSTNAME`. Look in `$WORKSPACE_DIR/patches/` for `.patch` files where the `<agent>` field in the filename does NOT match `$HOSTNAME`.
+
+Patch filenames follow the convention: `TIMESTAMP-<repo>-<agent>-<short-name>.patch`
+
+For each unique `<repo>-<agent>-<short-name>` group, only the latest patch (highest timestamp) matters — earlier versions are superseded.
+
+A patch is **unreviewed** if no file matching `*-<repo>-<agent>-<short-name>.review-*.md` exists with a timestamp >= the patch's timestamp.
+
+Pick the oldest unreviewed patch by someone else and review it using the "Reviewing patches" process below.
+
+### Priority 2: Address review feedback on your own patch
+
+Look for `.review-*.md` files in `$WORKSPACE_DIR/patches/` that reference one of your patches (where `<agent>` matches `$HOSTNAME`) and contain `Verdict: needs-work`.
+
+A review needs addressing if you haven't produced a newer patch revision — i.e., no `.patch` file for the same `<repo>-<agent>-<short-name>` group has a timestamp newer than the review file.
+
+Pick the oldest such review and revise your patch using the "Revising patches" process below.
+
+### If there's nothing to do
+
+If there are no unreviewed patches by others and no pending review feedback on your patches, say so and stop.
+
 ## Starting work
 1. Get the repo(s) you need. If ~/work/<repo> doesn't exist, clone it:
      git clone $WORKSPACE_DIR/<repo> ~/work/<repo>
