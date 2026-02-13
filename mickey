@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: mickey <command> [args]
+
+Commands:
+  hire <name>            Create agent and auth (interactive)
+  work <name> "<prompt>" Send task to agent
+  sh   <name>            Shell into agent
+  ls                     List agents
+  fire <name>            Remove agent
+EOF
+  exit 1
+}
+
+[[ $# -eq 0 ]] && usage
+
+cmd=$1; shift
+
+case "$cmd" in
+  hire)
+    [[ $# -lt 1 ]] && { echo "Usage: mickey hire <name>"; exit 1; }
+    docker sandbox create --name "$1" claude ~/src
+    docker sandbox run "$1"
+    ;;
+  work)
+    [[ $# -lt 2 ]] && { echo "Usage: mickey work <name> \"<prompt>\""; exit 1; }
+    name=$1; shift
+    docker sandbox exec "$name" claude -p "$*"
+    ;;
+  sh)
+    [[ $# -lt 1 ]] && { echo "Usage: mickey sh <name>"; exit 1; }
+    docker sandbox exec -it "$1" bash
+    ;;
+  ls)
+    docker sandbox ls
+    ;;
+  fire)
+    [[ $# -lt 1 ]] && { echo "Usage: mickey fire <name>"; exit 1; }
+    docker sandbox rm "$1"
+    ;;
+  *)
+    usage
+    ;;
+esac
