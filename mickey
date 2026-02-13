@@ -28,7 +28,7 @@ case "$cmd" in
   work)
     [[ $# -lt 2 ]] && { echo "Usage: mickey work <name> \"<prompt>\""; exit 1; }
     name=$1; shift
-    docker sandbox exec "$name" claude -p "$*"
+    docker sandbox run "$name" -- -p "$*"
     ;;
   sh)
     [[ $# -lt 1 ]] && { echo "Usage: mickey sh <name>"; exit 1; }
