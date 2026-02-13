@@ -16,7 +16,8 @@ Under the hood: each agent is a Docker sandbox sharing `~/src/`. They clone repo
 ```bash
 # Copy rules into your src directory
 cp agent-rules.md ~/src/CLAUDE.md
-mkdir -p ~/src/patches ~/src/queue
+mkdir -p ~/src/patch ~/src/queue
+# Put your repos under ~/src/repos/
 
 # Create and auth agents
 mickey hire alice
@@ -29,7 +30,7 @@ mickey hire bob
 mickey work alice "In myproject: Add JWT auth with login/logout endpoints. Include tests."
 ```
 
-Claude reads `~/src/CLAUDE.md`, clones `~/src/myproject` to `~/work/myproject`, works there, and writes the patch to `~/src/patches/`.
+Claude reads `~/src/CLAUDE.md`, clones `~/src/repos/myproject` to `~/work/myproject`, works there, and writes the patch to `~/src/patch/`.
 
 Patch file: `20260213-143022-myproject-alice-jwt-auth.patch`
 
@@ -66,13 +67,13 @@ Every patch in `~/src/queue/` has been reviewed and carries `Reviewed-by:` tags.
 
 ```bash
 ls ~/src/queue/
-cd ~/src/myproject && git am ~/src/queue/20260213-163000-myproject-alice-jwt-auth.patch
+cd ~/src/repos/myproject && git am ~/src/queue/20260213-163000-myproject-alice-jwt-auth.patch
 ```
 
 ## Full example
 
 ```
-~/src/patches/
+~/src/patch/
   20260213-143022-myproject-alice-jwt-auth.patch             # alice's v1
   20260213-151500-myproject-alice-jwt-auth.review-bob.md     # needs-work
   20260213-160000-myproject-alice-jwt-auth.patch             # alice's revision
@@ -99,7 +100,7 @@ Agent clones both repos, works on both, produces two patches.
 mickey work alice "In myproject: Add rate limiting to /auth."
 ```
 
-Agents automatically pull latest from `~/src/` before starting work or reviewing patches.
+Agents automatically pull latest from `~/src/repos/` before starting work or reviewing patches.
 
 ## State
 
@@ -107,7 +108,8 @@ Agents automatically pull latest from `~/src/` before starting work or reviewing
 |------|-------|
 | Agents | `mickey ls` |
 | Rules | `~/src/CLAUDE.md` (synced into all sandboxes) |
-| Patches & reviews | `~/src/patches/` (the mailing list) |
+| Repos | `~/src/repos/` (read-only source, agents clone from here) |
+| Patches & reviews | `~/src/patch/` (the mailing list) |
 | Merge queue | `~/src/queue/` (accepted patches, ready to apply) |
 | Agent work | `~/work/` inside each sandbox (not synced) |
 
@@ -116,7 +118,7 @@ Agents automatically pull latest from `~/src/` before starting work or reviewing
 ```bash
 # One-time setup
 cp agent-rules.md ~/src/CLAUDE.md
-mkdir -p ~/src/patches ~/src/queue
+mkdir -p ~/src/patch ~/src/queue ~/src/repos
 mickey hire <agent>                                          # create + auth
 
 # Daily workflow
