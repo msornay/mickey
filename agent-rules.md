@@ -3,16 +3,16 @@
 You are a developer agent working inside a Docker sandbox.
 
 ## Workspace layout
-- ~/src/ is synced to the host. DO NOT modify files here directly.
+- $WORKSPACE_DIR/ is synced to the host. DO NOT modify files here directly.
 - ~/work/ is your local workspace (not synced). Clone repos here and do all work here.
-- ~/src/patches/ is the shared patch mailing list (submissions, reviews, revisions).
-- ~/src/queue/ is the merge queue (accepted patches with `Reviewed-by:` tags, ready for the human to apply).
+- $WORKSPACE_DIR/patches/ is the shared patch mailing list (submissions, reviews, revisions).
+- $WORKSPACE_DIR/queue/ is the merge queue (accepted patches with `Reviewed-by:` tags, ready for the human to apply).
 
 ## Starting work
 1. Get the repo(s) you need. If ~/work/<repo> doesn't exist, clone it:
-     git clone ~/src/<repo> ~/work/<repo>
+     git clone $WORKSPACE_DIR/<repo> ~/work/<repo>
    If it already exists, pull latest:
-     cd ~/work/<repo> && git checkout main && git pull ~/src/<repo> main
+     cd ~/work/<repo> && git checkout main && git pull $WORKSPACE_DIR/<repo> main
 2. Work on a descriptive branch:
      cd ~/work/<repo> && git checkout -b <branch-name>
 
@@ -24,7 +24,7 @@ cd ~/work/<repo>
 git checkout -b squash-tmp main
 git merge --squash <branch-name>
 git commit -m "<descriptive message>"
-git format-patch main --stdout > ~/src/patches/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
+git format-patch main --stdout > $WORKSPACE_DIR/patches/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
 ```
 
 This writes the patch to the synced directory so the host can pick it up.
@@ -32,14 +32,14 @@ This writes the patch to the synced directory so the host can pick it up.
 ## Reviewing patches
 When asked to review a patch:
 
-1. Find the latest patch matching the name pattern in `~/src/patches/`.
+1. Find the latest patch matching the name pattern in `$WORKSPACE_DIR/patches/`.
 2. Parse the repo name from the filename.
 3. Clone the repo into ~/work/ if not already there, or sync to latest main:
-   git clone ~/src/<repo> ~/work/<repo>  # if new
-   cd ~/work/<repo> && git checkout main && git pull ~/src/<repo> main
+   git clone $WORKSPACE_DIR/<repo> ~/work/<repo>  # if new
+   cd ~/work/<repo> && git checkout main && git pull $WORKSPACE_DIR/<repo> main
 4. Apply the patch:
    ```
-   git am ~/src/patches/<patch-file>
+   git am $WORKSPACE_DIR/patches/<patch-file>
    ```
 5. Read the code and run tests.
 6. Get the HEAD commit hash:
@@ -50,7 +50,7 @@ When asked to review a patch:
    ```
    TIMESTAMP=$(date +%Y%m%d-%H%M%S)
    ```
-   File: `~/src/patches/${TIMESTAMP}-<repo>-<agent>-<short-name>.review-<reviewer>.md`
+   File: `$WORKSPACE_DIR/patches/${TIMESTAMP}-<repo>-<agent>-<short-name>.review-<reviewer>.md`
 
    Format:
    ```
@@ -73,14 +73,14 @@ When asked to review a patch:
 
    Reviewed-by: <reviewer>"
    TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-   git format-patch main --stdout > ~/src/queue/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
+   git format-patch main --stdout > $WORKSPACE_DIR/queue/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
    ```
-   The human applies patches from `~/src/queue/` — every patch there has `Reviewed-by:` tags.
+   The human applies patches from `$WORKSPACE_DIR/queue/` — every patch there has `Reviewed-by:` tags.
 
 ## Revising patches
 When asked to address review feedback:
 
-1. Read the review file (verdict: needs-work) in `~/src/patches/`.
+1. Read the review file (verdict: needs-work) in `$WORKSPACE_DIR/patches/`.
 2. The `Reviewed-commit:` hash identifies which patch version was reviewed.
 3. Fix the issues in `~/work/<repo>`, make new commits on your branch.
 4. Produce a new patch with a new timestamp (the old patch stays as history):
@@ -89,11 +89,11 @@ When asked to address review feedback:
    git checkout -b squash-tmp main
    git merge --squash <branch-name>
    git commit -m "<descriptive message>"
-   git format-patch main --stdout > ~/src/patches/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
+   git format-patch main --stdout > $WORKSPACE_DIR/patches/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
    ```
 
 ## Rules
-- NEVER modify anything in ~/src/ except writing patch files to ~/src/patches/ and ~/src/queue/
+- NEVER modify anything in $WORKSPACE_DIR/ except writing patch files to $WORKSPACE_DIR/patches/ and $WORKSPACE_DIR/queue/
 - NEVER push to any remote
 - NEVER create pull requests
 - Always run tests before producing a patch
