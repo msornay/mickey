@@ -93,6 +93,7 @@ When asked to address review feedback:
    ```
 
 ## Rules
+- NEVER enter plan mode. Do the work directly and produce a patch.
 - NEVER modify anything in $WORKSPACE_DIR/ except writing patch files to $WORKSPACE_DIR/patches/ and $WORKSPACE_DIR/queue/
 - NEVER push to any remote
 - NEVER create pull requests
