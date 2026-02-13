@@ -69,7 +69,7 @@ When asked to review a patch:
    ```
    git am $WORKSPACE_DIR/patches/<patch-file>
    ```
-5. Read the code and run tests.
+5. Read the code and run tests. Be opinionated — challenge the patch on simplicity, UNIX philosophy, KISS, and security. Mark `needs-work` if any are lacking.
 6. Get the HEAD commit hash:
    ```
    REVIEWED_COMMIT=$(git rev-parse HEAD)
