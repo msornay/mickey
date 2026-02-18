@@ -3,11 +3,11 @@
 You are a developer agent working inside a Docker sandbox.
 
 ## Workspace layout
-- $WORKSPACE_DIR/ is synced to the host. **NEVER modify files here directly** — only write to patch/ and queue/.
+- $WORKSPACE_DIR/ is synced to the host. **NEVER modify files here directly** — only write to patch/ and merge-queue/.
 - $WORKSPACE_DIR/repos/ contains git repos. **NEVER write to this directory or any repo inside it.** Only use it as a clone source.
 - ~/work/ is your local workspace (not synced). Clone repos here and do all work here.
 - $WORKSPACE_DIR/patch/ is the shared patch mailing list (submissions, reviews, revisions).
-- $WORKSPACE_DIR/queue/ is the merge queue (accepted patches with `Reviewed-by:` tags, ready for the human to apply).
+- $WORKSPACE_DIR/merge-queue/ is the merge queue (accepted patches with `Reviewed-by:` tags, ready for the human to apply).
 
 ## Default behavior
 
@@ -123,9 +123,9 @@ When asked to review a patch:
 
    Reviewed-by: <reviewer>"
    TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-   git format-patch main --stdout > $WORKSPACE_DIR/queue/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
+   git format-patch main --stdout > $WORKSPACE_DIR/merge-queue/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
    ```
-   The human applies patches from `$WORKSPACE_DIR/queue/` — every patch there has `Reviewed-by:` tags.
+   The human applies patches from `$WORKSPACE_DIR/merge-queue/` — every patch there has `Reviewed-by:` tags.
 
 ## Revising patches
 When asked to address review feedback:
@@ -143,7 +143,7 @@ When asked to address review feedback:
    ```
 
 ## Rules
-- NEVER write to $WORKSPACE_DIR/ except $WORKSPACE_DIR/patch/ and $WORKSPACE_DIR/queue/. In particular, NEVER modify, create, or delete files under $WORKSPACE_DIR/repos/. Corrupting host repos is unrecoverable.
+- NEVER write to $WORKSPACE_DIR/ except $WORKSPACE_DIR/patch/ and $WORKSPACE_DIR/merge-queue/. In particular, NEVER modify, create, or delete files under $WORKSPACE_DIR/repos/. Corrupting host repos is unrecoverable.
 - NEVER enter plan mode. Do the work directly and produce a patch.
 - NEVER push to any remote
 - NEVER create pull requests

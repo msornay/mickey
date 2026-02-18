@@ -2,7 +2,7 @@
 
 Hire AI agents that write code and review each other's patches — you just apply what lands in the merge queue.
 
-Under the hood: each agent is a Docker sandbox sharing `~/src/`. They clone repos into `~/work/`, produce `git format-patch` output, and peer-review before anything reaches your queue.
+Under the hood: each agent is a Docker sandbox sharing `~/src/`. They clone repos into `~/work/`, produce `git format-patch` output, and peer-review before anything reaches your merge queue.
 
 ## Files
 
@@ -16,7 +16,7 @@ Under the hood: each agent is a Docker sandbox sharing `~/src/`. They clone repo
 ```bash
 # Copy rules into your src directory
 cp agent-rules.md ~/src/CLAUDE.md
-mkdir -p ~/src/patch ~/src/queue
+mkdir -p ~/src/patch ~/src/merge-queue
 # Put your repos under ~/src/repos/
 
 # Create and auth agents
@@ -43,7 +43,7 @@ mickey work bob "Review alice's latest jwt-auth patch for myproject"
 Bob applies the patch, reads code, runs tests, and writes a review file:
 - `20260213-151500-myproject-alice-jwt-auth.review-bob.md`
 
-If the verdict is **accept**, Bob also adds `Reviewed-by: bob` to the commit and produces the patch into `~/src/queue/`.
+If the verdict is **accept**, Bob also adds `Reviewed-by: bob` to the commit and produces the patch into `~/src/merge-queue/`.
 
 If the verdict is **needs-work**, alice revises (see below).
 
@@ -61,13 +61,13 @@ Then bob re-reviews the latest version:
 mickey work bob "Review alice's latest jwt-auth patch for myproject"
 ```
 
-## Apply from queue
+## Apply from merge queue
 
-Every patch in `~/src/queue/` has been reviewed and carries `Reviewed-by:` tags.
+Every patch in `~/src/merge-queue/` has been reviewed and carries `Reviewed-by:` tags.
 
 ```bash
-ls ~/src/queue/
-cd ~/src/repos/myproject && git am ~/src/queue/20260213-163000-myproject-alice-jwt-auth.patch
+ls ~/src/merge-queue/
+cd ~/src/repos/myproject && git am ~/src/merge-queue/20260213-163000-myproject-alice-jwt-auth.patch
 ```
 
 ## Full example
@@ -79,7 +79,7 @@ cd ~/src/repos/myproject && git am ~/src/queue/20260213-163000-myproject-alice-j
   20260213-160000-myproject-alice-jwt-auth.patch             # alice's revision
   20260213-163000-myproject-alice-jwt-auth.review-bob.md     # accept
 
-~/src/queue/
+~/src/merge-queue/
   20260213-163000-myproject-alice-jwt-auth.patch             # has Reviewed-by: bob
 ```
 
@@ -110,7 +110,7 @@ Agents automatically pull latest from `~/src/repos/` before starting work or rev
 | Rules | `~/src/CLAUDE.md` (synced into all sandboxes) |
 | Repos | `~/src/repos/` (read-only source, agents clone from here) |
 | Patches & reviews | `~/src/patch/` (the mailing list) |
-| Merge queue | `~/src/queue/` (accepted patches, ready to apply) |
+| Merge queue | `~/src/merge-queue/` (accepted patches, ready to apply) |
 | Agent work | `~/work/` inside each sandbox (not synced) |
 
 ## Quick reference
@@ -118,13 +118,13 @@ Agents automatically pull latest from `~/src/repos/` before starting work or rev
 ```bash
 # One-time setup
 cp agent-rules.md ~/src/CLAUDE.md
-mkdir -p ~/src/patch ~/src/queue ~/src/repos
+mkdir -p ~/src/patch ~/src/merge-queue ~/src/repos
 mickey hire <agent>                                          # create + auth
 
 # Daily workflow
 mickey work <agent> "<task>"                                 # send task
 mickey work <reviewer> "Review <agent>'s latest <name> patch for <repo>"
-git am ~/src/queue/<timestamp>-<repo>-<agent>-<name>.patch   # apply from queue
+git am ~/src/merge-queue/<timestamp>-<repo>-<agent>-<name>.patch   # apply from merge queue
 
 # Utilities
 mickey sh <agent>                                            # shell into agent

@@ -18,9 +18,9 @@ The entire CLI is a single bash script (`mickey`) wrapping `docker sandbox` comm
 ```
 Agent writes code → git format-patch → ~/src/patch/
 Reviewer applies patch → runs tests → writes .review-<name>.md
-  Accept → amend with Reviewed-by: → copy to ~/src/queue/
+  Accept → amend with Reviewed-by: → copy to ~/src/merge-queue/
   Needs-work → author revises → new patch → re-review
-Human applies from ~/src/queue/ with git am
+Human applies from ~/src/merge-queue/ with git am
 ```
 
 When given no specific task, agents automatically pick up work: review unreviewed patches by others (priority 1), or address review feedback on their own patches (priority 2). Agent identity is determined by `$HOSTNAME` matching the `<agent>` field in patch filenames.
@@ -29,11 +29,11 @@ When given no specific task, agents automatically pick up work: review unreviewe
 
 | Path | Purpose |
 |------|---------|
-| `$WORKSPACE_DIR/` (`~/src/`) | Synced to host. Agents must NOT modify directly (except patch/queue). |
+| `$WORKSPACE_DIR/` (`~/src/`) | Synced to host. Agents must NOT modify directly (except patch/merge-queue). |
 | `$WORKSPACE_DIR/repos/` | Git repos (read-only). Agents clone from here. |
 | `~/work/` | Local workspace. Agents clone repos here. |
 | `$WORKSPACE_DIR/patch/` | Shared patch mailing list. |
-| `$WORKSPACE_DIR/queue/` | Merge queue (reviewed patches with `Reviewed-by:` tags). |
+| `$WORKSPACE_DIR/merge-queue/` | Merge queue (reviewed patches with `Reviewed-by:` tags). |
 
 ## No build/test/lint
 
