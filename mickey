@@ -2,17 +2,18 @@
 set -euo pipefail
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 Usage: mickey <command> [args]
 
 Commands:
   hire <name>            Create agent and auth (interactive)
   work <name> ["<prompt>"] Send task to agent (auto-picks work if no prompt)
+  whip                   Send all agents to work continuously (Ctrl-C to stop)
   sh   <name>            Shell into agent
   ls                     List agents
   fire <name>            Remove agent
   reset                  Clear patch/ and merge-queue/ (with confirmation)
-EOF
+USAGE
   exit 1
 }
 
@@ -31,6 +32,21 @@ case "$cmd" in
     name=$1; shift
     prompt="${*:-Follow your default behavior instructions: review unreviewed patches by others, address review feedback on your own patches, or find TODOs in repos and work on them.}"
     docker sandbox run "$name" -- -p "$prompt"
+    ;;
+  whip)
+    trap 'kill 0; exit 0' INT TERM
+    while true; do
+      names=$(docker sandbox ls --format '{{.Name}}')
+      if [[ -z "$names" ]]; then
+        echo "No agents found."
+        exit 0
+      fi
+      for name in $names; do
+        echo "Sending $name to work..."
+        "$0" work "$name" &
+      done
+      wait
+    done
     ;;
   sh)
     [[ $# -lt 1 ]] && { echo "Usage: mickey sh <name>"; exit 1; }
