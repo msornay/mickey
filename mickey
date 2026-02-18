@@ -28,7 +28,7 @@ case "$cmd" in
   work)
     [[ $# -lt 1 ]] && { echo "Usage: mickey work <name> [\"<prompt>\"]"; exit 1; }
     name=$1; shift
-    prompt="${*:-Follow your default behavior instructions.}"
+    prompt="${*:-Follow your default behavior instructions: review unreviewed patches by others, address review feedback on your own patches, or find TODOs in repos and work on them.}"
     docker sandbox run "$name" -- -p "$prompt"
     ;;
   sh)

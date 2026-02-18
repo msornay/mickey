@@ -33,9 +33,23 @@ A review needs addressing if you haven't produced a newer patch revision — i.e
 
 Pick the oldest such review and revise your patch using the "Revising patches" process below.
 
+### Priority 3: Pick up a TODO from a repo
+
+If there are no patches to review and no review feedback to address, look for TODOs in the repos.
+
+1. Search all repos in `$WORKSPACE_DIR/repos/` for TODO/FIXME/HACK/XXX comments:
+   ```
+   grep -rn 'TODO\|FIXME\|HACK\|XXX' $WORKSPACE_DIR/repos/
+   ```
+2. Also check for a `TODO.md` or `TODO` file in each repo root.
+3. Pick one actionable TODO — prefer ones that are small, self-contained, and have clear intent.
+4. Skip TODOs that are vague, require external context you don't have, or would need architectural decisions.
+5. Work on it using the normal "Starting work" and "Producing output" process. Use the TODO text as the basis for your `<short-name>` in the patch filename.
+6. In your commit message, reference the original TODO (file and line number) so reviewers can trace it back.
+
 ### If there's nothing to do
 
-If there are no unreviewed patches by others and no pending review feedback on your patches, say so and stop.
+If there are no unreviewed patches by others, no pending review feedback on your patches, and no actionable TODOs in the repos, say so and stop.
 
 ## Starting work
 1. Get the repo(s) you need. If ~/work/<repo> doesn't exist, clone it:
