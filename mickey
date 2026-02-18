@@ -11,6 +11,7 @@ Commands:
   sh   <name>            Shell into agent
   ls                     List agents
   fire <name>            Remove agent
+  reset                  Clear patch/ and merge-queue/ (with confirmation)
 EOF
   exit 1
 }
@@ -41,6 +42,22 @@ case "$cmd" in
   fire)
     [[ $# -lt 1 ]] && { echo "Usage: mickey fire <name>"; exit 1; }
     docker sandbox rm "$1"
+    ;;
+  reset)
+    ws="${WORKSPACE_DIR:-$HOME/src}"
+    patch_dir="$ws/patch"
+    queue_dir="$ws/merge-queue"
+    patch_count=$(find "$patch_dir" -maxdepth 1 -type f ! -name '.DS_Store' 2>/dev/null | wc -l)
+    queue_count=$(find "$queue_dir" -maxdepth 1 -type f ! -name '.DS_Store' 2>/dev/null | wc -l)
+    echo "This will delete:"
+    echo "  $patch_count file(s) in $patch_dir"
+    echo "  $queue_count file(s) in $queue_dir"
+    printf "Continue? [y/N] "
+    read -r answer
+    [[ "$answer" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
+    find "$patch_dir" -maxdepth 1 -type f ! -name '.DS_Store' -delete 2>/dev/null || true
+    find "$queue_dir" -maxdepth 1 -type f ! -name '.DS_Store' -delete 2>/dev/null || true
+    echo "Done."
     ;;
   *)
     usage
