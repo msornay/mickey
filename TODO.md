@@ -1,5 +1,6 @@
 # TODO
 
+- When a single agent has finished working, whip wait for ALL agent to finish before restarting. This isn't the desired behavior. An agent done should be restarted immediately
 - The README is outdated. It should be recreated from scrath and be KISS.
 - Add a lean sanity test suite that the mickey script shoul pass before a patch is created
 - When the agent exits with code 1 it probably indicates it run out of credits. wait 5min before retrying in whip
