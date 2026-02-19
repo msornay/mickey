@@ -6,13 +6,13 @@ usage() {
 Usage: mickey <command> [args]
 
 Commands:
-  hire <name>            Create agent and auth (interactive)
-  work <name> ["<prompt>"] Send task to agent (auto-picks work if no prompt)
-  whip                   Send all agents to work continuously (Ctrl-C to stop)
-  sh   <name>            Shell into agent
-  ls                     List agents
-  fire <name>            Remove agent
-  reset                  Clear patch/ and merge-queue/ (with confirmation)
+  hire <name>                              Create agent and auth (interactive)
+  work [--model <model>] <name> ["<prompt>"] Send task to agent (auto-picks work if no prompt)
+  whip [--model <model>]                   Send all agents to work continuously (Ctrl-C to stop)
+  sh   <name>                              Shell into agent
+  ls                                       List agents
+  fire <name>                              Remove agent
+  reset                                    Clear patch/ and merge-queue/ (with confirmation)
 USAGE
   exit 1
 }
@@ -28,12 +28,26 @@ case "$cmd" in
     docker sandbox run "$1"
     ;;
   work)
-    [[ $# -lt 1 ]] && { echo "Usage: mickey work <name> [\"<prompt>\"]"; exit 1; }
+    model=""
+    if [[ "${1:-}" == "--model" ]]; then
+      [[ $# -lt 2 ]] && { echo "Usage: mickey work [--model <model>] <name> [\"<prompt>\"]"; exit 1; }
+      shift; model="$1"; shift
+    fi
+    [[ $# -lt 1 ]] && { echo "Usage: mickey work [--model <model>] <name> [\"<prompt>\"]"; exit 1; }
     name=$1; shift
     prompt="${*:-Follow your default behavior instructions: review unreviewed patches by others, address review feedback on your own patches, or find TODOs in repos and work on them.}"
-    docker sandbox run "$name" -- -p "$prompt"
+    if [[ -n "$model" ]]; then
+      ANTHROPIC_MODEL="$model" docker sandbox run "$name" -- -p "$prompt"
+    else
+      docker sandbox run "$name" -- -p "$prompt"
+    fi
     ;;
   whip)
+    model=""
+    if [[ "${1:-}" == "--model" ]]; then
+      [[ $# -lt 2 ]] && { echo "Usage: mickey whip [--model <model>]"; exit 1; }
+      shift; model="$1"; shift
+    fi
     trap 'kill 0; exit 0' INT TERM
     while true; do
       names=$(docker sandbox ls | awk 'NR>1 {print $1}')
@@ -43,7 +57,11 @@ case "$cmd" in
       fi
       for name in $names; do
         echo "Sending $name to work..."
-        "$0" work "$name" &
+        if [[ -n "$model" ]]; then
+          "$0" work --model "$model" "$name" &
+        else
+          "$0" work "$name" &
+        fi
       done
       wait
     done
