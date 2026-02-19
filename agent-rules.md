@@ -127,6 +127,15 @@ When asked to review a patch:
    ```
    The human applies patches from `$WORKSPACE_DIR/merge-queue/` — every patch there has `Reviewed-by:` tags.
 
+9. **Verify the merge-queue patch applies cleanly**. Reset main to before the patch, re-apply from the merge-queue file, then restore main to the accepted commit (using the same `$TIMESTAMP` from step 8):
+   ```
+   ACCEPTED=$(git rev-parse HEAD)
+   git reset --hard HEAD~1
+   git am $WORKSPACE_DIR/merge-queue/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
+   git reset --hard $ACCEPTED
+   ```
+   If `git am` fails, run `git am --abort && git reset --hard $ACCEPTED` to restore the repo, then fix and re-produce the merge-queue patch before finishing.
+
 ## Revising patches
 When asked to address review feedback:
 
