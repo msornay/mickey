@@ -60,22 +60,29 @@ case "$cmd" in
       shift; model="$1"; shift
     fi
     trap 'kill 0; exit 0' INT TERM
-    while true; do
-      names=$(docker sandbox ls | awk 'NR>1 {print $1}')
-      if [[ -z "$names" ]]; then
-        echo "No agents found."
-        exit 0
-      fi
-      for name in $names; do
-        echo "Sending $name to work..."
-        if [[ -n "$model" ]]; then
-          "$0" work --model "$model" "$name" &
-        else
-          "$0" work "$name" &
-        fi
-      done
-      wait
+    names=$(docker sandbox ls | awk 'NR>1 {print $1}')
+    if [[ -z "$names" ]]; then
+      echo "No agents found."
+      exit 0
+    fi
+    for name in $names; do
+      (
+        while true; do
+          echo "Sending $name to work..."
+          exit_code=0
+          if [[ -n "$model" ]]; then
+            "$0" work --model "$model" "$name" || exit_code=$?
+          else
+            "$0" work "$name" || exit_code=$?
+          fi
+          if [[ $exit_code -eq 1 ]]; then
+            echo "$name exited with code 1 (credits exhausted?). Waiting 5 minutes before retry..." >&2
+            sleep 300
+          fi
+        done
+      ) &
     done
+    wait
     ;;
   sh)
     [[ $# -lt 1 ]] && { echo "Usage: mickey sh <name>"; exit 1; }
