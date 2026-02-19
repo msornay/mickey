@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+warn_writable_repos() {
+  local repos_dir="${WORKSPACE_DIR:-$HOME/src}/repos"
+  [[ -d "$repos_dir" ]] || return 0
+  if find "$repos_dir" -maxdepth 1 -writable -print -quit 2>/dev/null | grep -q .; then
+    echo "Warning: $repos_dir is writable — agents may accidentally modify source repos." >&2
+    echo "         Run: chmod -R a-w $repos_dir" >&2
+  fi
+}
+
 usage() {
   cat <<'USAGE'
 Usage: mickey <command> [args]
@@ -28,6 +37,7 @@ case "$cmd" in
     docker sandbox run "$1"
     ;;
   work)
+    warn_writable_repos
     model=""
     if [[ "${1:-}" == "--model" ]]; then
       [[ $# -lt 2 ]] && { echo "Usage: mickey work [--model <model>] <name> [\"<prompt>\"]"; exit 1; }
@@ -43,6 +53,7 @@ case "$cmd" in
     fi
     ;;
   whip)
+    warn_writable_repos
     model=""
     if [[ "${1:-}" == "--model" ]]; then
       [[ $# -lt 2 ]] && { echo "Usage: mickey whip [--model <model>]"; exit 1; }
