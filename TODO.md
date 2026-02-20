@@ -12,3 +12,4 @@
 - Warn on `work`/`whip` if repos under `~/src/repos/` are writable — only the prompt prevents agents from modifying them, so the recommendation is to `chmod -R a-w ~/src/repos/` before running agents
 - Inline agent-rules.md content into the `mickey` script as a heredoc variable, and pass it to agents via `--append-system-prompt` instead of relying on ambient ~/src/CLAUDE.md discovery. This eliminates the manual `cp agent-rules.md ~/src/CLAUDE.md` step and prevents agent rules from leaking into interactive Claude Code sessions. Delete `agent-rules.md` after inlining.
 - Update CLAUDE.md and README.md to remove all references to copying agent-rules.md to ~/src/CLAUDE.md. Document that rules are now inlined in the mickey script and injected via --append-system-prompt.
+- whip used without model should start one agent with opus and all the others with sonnet
