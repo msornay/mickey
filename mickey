@@ -50,10 +50,15 @@ If there are no patches to review and no review feedback to address, look for TO
    grep -li '\''<keyword>'\'' $WORKSPACE_DIR/patch/*.patch 2>/dev/null
    ```
    Skip TODOs that already have a corresponding patch (even if unreviewed).
-4. Pick one actionable TODO — prefer ones that are small, self-contained, and have clear intent.
-5. Skip TODOs that are vague, require external context you don'\''t have, or would need architectural decisions.
-6. Work on it using the normal "Starting work" and "Producing output" process. Use the TODO text as the basis for your `<short-name>` in the patch filename.
-7. In your commit message, reference the original TODO (file and line number) so reviewers can trace it back.
+4. Skip TODOs that already have a `.wip` file in `$WORKSPACE_DIR/patch/` — another agent is already working on it. `.wip` filenames follow the same convention: `TIMESTAMP-<repo>-<agent>-<short-name>.wip`.
+5. Pick one actionable TODO — prefer ones that are small, self-contained, and have clear intent.
+6. Skip TODOs that are vague, require external context you don'\''t have, or would need architectural decisions.
+7. Claim the TODO by creating a `.wip` file before starting work:
+   ```
+   touch $WORKSPACE_DIR/patch/$(date +%Y%m%d-%H%M%S)-<repo>-$(hostname)-<short-name>.wip
+   ```
+8. Work on it using the normal "Starting work" and "Producing output" process. Use the TODO text as the basis for your `<short-name>` in the patch filename.
+9. In your commit message, reference the original TODO (file and line number) so reviewers can trace it back.
 
 ### If there'\''s nothing to do
 
@@ -86,6 +91,11 @@ git am --check $WORKSPACE_DIR/patch/${TIMESTAMP}-<repo>-<agent>-<short-name>.pat
 ```
 
 If it fails, fix your branch and regenerate the patch.
+
+If you created a `.wip` file for this work, delete it now that the `.patch` file exists:
+```
+rm -f $WORKSPACE_DIR/patch/*-<repo>-$(hostname)-<short-name>.wip
+```
 
 ## Reviewing patches
 When asked to review a patch:
