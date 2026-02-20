@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Lean sanity tests for the mickey script.
+# Tests argument parsing, usage output, and script structure.
+# Does NOT require Docker — only validates the script itself.
+set -euo pipefail
+
+MICKEY="$(cd "$(dirname "$0")" && pwd)/mickey"
+pass=0
+fail=0
+
+assert_exits() {
+    local expected=$1 desc=$2; shift 2
+    local actual=0
+    "$@" >/dev/null 2>&1 || actual=$?
+    if [[ $actual -eq $expected ]]; then
+        pass=$((pass + 1)); echo "ok   - $desc"
+    else
+        fail=$((fail + 1)); echo "FAIL - $desc (expected exit $expected, got $actual)"
+    fi
+}
+
+assert_output_matches() {
+    local pattern=$1 desc=$2; shift 2
+    local output
+    output=$("$@" 2>&1) || true
+    if echo "$output" | grep -qE "$pattern"; then
+        pass=$((pass + 1)); echo "ok   - $desc"
+    else
+        fail=$((fail + 1)); echo "FAIL - $desc (output missing /$pattern/)"
+    fi
+}
+
+# -- Script structure --
+assert_exits 0 "script passes bash -n syntax check" bash -n "$MICKEY"
+
+# -- No args --
+assert_exits 1 "no args exits 1" "$MICKEY"
+assert_output_matches "^Usage:" "no args shows usage" "$MICKEY"
+
+# -- Unknown command --
+assert_exits 1 "unknown command exits 1" "$MICKEY" badcmd
+assert_output_matches "^Usage:" "unknown command shows usage" "$MICKEY" badcmd
+
+# -- hire: missing name --
+assert_exits 1 "hire without name exits 1" "$MICKEY" hire
+assert_output_matches "mickey hire" "hire without name shows correct usage" "$MICKEY" hire
+
+# -- work: missing name --
+assert_exits 1 "work without name exits 1" "$MICKEY" work
+assert_output_matches "mickey work" "work without name shows correct usage" "$MICKEY" work
+
+# -- work --model: incomplete args --
+assert_exits 1 "work --model without value exits 1" "$MICKEY" work --model
+assert_exits 1 "work --model with value but no name exits 1" "$MICKEY" work --model opus
+
+# -- sh: missing name --
+assert_exits 1 "sh without name exits 1" "$MICKEY" sh
+assert_output_matches "mickey sh" "sh without name shows correct usage" "$MICKEY" sh
+
+# -- fire: missing name --
+assert_exits 1 "fire without name exits 1" "$MICKEY" fire
+assert_output_matches "mickey fire" "fire without name shows correct usage" "$MICKEY" fire
+
+# -- Agent rules embedded --
+assert_exits 0 "AGENT_RULES variable is defined" grep -q "^AGENT_RULES=" "$MICKEY"
+assert_exits 0 "agent rules contain workspace layout" grep -q "Workspace layout" "$MICKEY"
+assert_exits 0 "agent rules contain patch workflow" grep -q "Producing output" "$MICKEY"
+assert_exits 0 "agent rules contain review process" grep -q "Reviewing patches" "$MICKEY"
+
+echo ""
+echo "$((pass + fail)) tests, $pass passed, $fail failed"
+[[ $fail -eq 0 ]]
