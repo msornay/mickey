@@ -226,16 +226,21 @@ case "$cmd" in
       echo "No agents found."
       exit 0
     fi
+    first=true
     for name in $names; do
+      if [[ -n "$model" ]]; then
+        agent_model="$model"
+      elif $first; then
+        agent_model="claude-opus-4-6"
+        first=false
+      else
+        agent_model="claude-sonnet-4-6"
+      fi
       (
         while true; do
-          echo "Sending $name to work..."
+          echo "Sending $name to work ($agent_model)..."
           exit_code=0
-          if [[ -n "$model" ]]; then
-            "$0" work --model "$model" "$name" || exit_code=$?
-          else
-            "$0" work "$name" || exit_code=$?
-          fi
+          "$0" work --model "$agent_model" "$name" || exit_code=$?
           if [[ $exit_code -eq 1 ]]; then
             echo "$name exited with code 1 (credits exhausted?). Waiting 5 minutes before retry..." >&2
             sleep 300
