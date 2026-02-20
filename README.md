@@ -5,7 +5,6 @@ Hire AI agents that write code and review each other's patches.
 ## Setup
 
 ```bash
-cp agent-rules.md ~/src/CLAUDE.md
 mkdir -p ~/src/patch ~/src/merge-queue ~/src/repos
 # Put your git repos under ~/src/repos/
 mickey hire alice

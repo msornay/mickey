@@ -10,8 +10,7 @@ The entire CLI is a single bash script (`mickey`) wrapping `docker sandbox` comm
 
 ## Architecture
 
-- **`mickey`** — Bash CLI (~47 lines). Maps commands to `docker sandbox` subcommands: `hire`→`create`, `work`→`run`, `sh`→`exec`, `ls`→`ls`, `fire`→`rm`.
-- **`agent-rules.md`** — Instructions copied to `~/src/CLAUDE.md` so agents inside sandboxes know the workflow. Defines workspace layout, default autonomous behavior, patch production, review process, and revision cycle.
+- **`mickey`** — Bash CLI. Maps commands to `docker sandbox` subcommands: `hire`→`create`, `work`→`run`, `sh`→`exec`, `ls`→`ls`, `fire`→`rm`. Agent rules are inlined as a heredoc variable and injected via `--append-system-prompt`.
 
 ### Patch workflow
 
@@ -37,8 +36,8 @@ When given no specific task, agents automatically pick up work: review unreviewe
 
 ## No build/test/lint
 
-This project has no build step, test suite, or linter. It's a single bash script with a markdown rules file.
+This project has no build step, test suite, or linter. It's a single bash script.
 
 ## Making changes
 
-When modifying `agent-rules.md`, keep in mind it gets copied to `~/src/CLAUDE.md` and is the sole source of truth for agent behavior inside sandboxes. The copy in `~/src/CLAUDE.md` (the parent directory) is what agents actually read — changes to `agent-rules.md` require re-copying.
+Agent rules are defined in the `AGENT_RULES` variable at the top of the `mickey` script and injected into each agent session via `--append-system-prompt`. To change agent behavior, edit the heredoc in `mickey` directly.
