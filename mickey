@@ -149,7 +149,15 @@ When asked to review a patch:
    ```
    The human applies patches from `$WORKSPACE_DIR/merge-queue/` — every patch there has `Reviewed-by:` tags.
 
-9. **Verify the merge-queue patch applies cleanly**. Reset main to before the patch, re-apply from the merge-queue file, then restore main to the accepted commit (using the same `$TIMESTAMP` from step 8):
+9. **If the patch addresses a repo TODO**: check the commit message for TODO references. If the repo has a `TODO.md` (or `TODO`) file and the patch clearly addresses one of its items, remove the addressed line(s) from that file, stage the change, amend the commit, and regenerate the merge-queue patch:
+   ```
+   # edit TODO.md to remove the addressed item(s)
+   git add TODO.md
+   git commit --amend --no-edit
+   git format-patch main --stdout > $WORKSPACE_DIR/merge-queue/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
+   ```
+
+10. **Verify the merge-queue patch applies cleanly**. Reset main to before the patch, re-apply from the merge-queue file, then restore main to the accepted commit (using the same `$TIMESTAMP` from step 8):
    ```
    ACCEPTED=$(git rev-parse HEAD)
    git reset --hard HEAD~1
