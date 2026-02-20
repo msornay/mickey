@@ -45,10 +45,15 @@ If there are no patches to review and no review feedback to address, look for TO
    grep -rn '\''TODO\|FIXME\|HACK\|XXX'\'' $WORKSPACE_DIR/repos/
    ```
 2. Also check for a `TODO.md` or `TODO` file in each repo root.
-3. Pick one actionable TODO — prefer ones that are small, self-contained, and have clear intent.
-4. Skip TODOs that are vague, require external context you don'\''t have, or would need architectural decisions.
-5. Work on it using the normal "Starting work" and "Producing output" process. Use the TODO text as the basis for your `<short-name>` in the patch filename.
-6. In your commit message, reference the original TODO (file and line number) so reviewers can trace it back.
+3. Before picking a TODO, check that no existing `.patch` file in `$WORKSPACE_DIR/patch/` already addresses it — scan patch filenames and commit subjects for keywords from the TODO:
+   ```
+   grep -li '\''<keyword>'\'' $WORKSPACE_DIR/patch/*.patch 2>/dev/null
+   ```
+   Skip TODOs that already have a corresponding patch (even if unreviewed).
+4. Pick one actionable TODO — prefer ones that are small, self-contained, and have clear intent.
+5. Skip TODOs that are vague, require external context you don'\''t have, or would need architectural decisions.
+6. Work on it using the normal "Starting work" and "Producing output" process. Use the TODO text as the basis for your `<short-name>` in the patch filename.
+7. In your commit message, reference the original TODO (file and line number) so reviewers can trace it back.
 
 ### If there'\''s nothing to do
 
