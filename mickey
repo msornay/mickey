@@ -71,6 +71,10 @@ If there are no unreviewed patches by others, no pending review feedback on your
      cd ~/work/<repo> && git checkout main && git pull $WORKSPACE_DIR/repos/<repo> main
 2. Work on a descriptive branch:
      cd ~/work/<repo> && git checkout -b <branch-name>
+3. Set git author to identify this agent and model:
+     cd ~/work/<repo>
+     git config user.name "$(hostname) [bot]"
+     git config user.email "$(hostname)+${ANTHROPIC_MODEL:-claude}@agent.local"
 
 ## Producing output
 When your task is complete and tests pass, squash to a single commit with a datetime-prefixed patch:
