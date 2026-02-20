@@ -34,9 +34,9 @@ When given no specific task, agents automatically pick up work: review unreviewe
 | `$WORKSPACE_DIR/patch/` | Shared patch mailing list. |
 | `$WORKSPACE_DIR/merge-queue/` | Merge queue (reviewed patches with `Reviewed-by:` tags). |
 
-## No build/test/lint
+## Testing
 
-This project has no build step, test suite, or linter. It's a single bash script.
+Run the test suite with `./test_mickey`. Tests validate argument parsing, usage output, and script structure without requiring Docker.
 
 ## Making changes
 
