@@ -4,35 +4,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Mickey
 
-Mickey is a CLI for hiring AI agents that write code and review each other's patches. Each agent runs in an isolated Docker sandbox sharing `~/src/`. Agents produce `git format-patch` output and peer-review before anything reaches a human's merge queue.
+Mickey is a CLI for hiring AI agents that write code in isolated Docker sandboxes sharing `~/src/`. Agents produce `git format-patch` output after passing sanity tests (`make test`), submitting patches directly to a merge queue organized by repo.
 
 The entire CLI is a single bash script (`mickey`) wrapping `docker sandbox` commands.
 
 ## Architecture
 
-- **`mickey`** — Bash CLI. Maps commands to `docker sandbox` subcommands: `hire`→`create`, `work`→`run`, `sh`→`exec`, `ls`→`ls`, `fire`→`rm`. Agent rules are inlined as a heredoc variable and injected via `--append-system-prompt`.
+- **`mickey`** — Bash CLI. Maps commands to `docker sandbox` subcommands: `hire`→`create`, `whip`→`run` (all agents), `sh`→`exec`, `ls`→`ls`, `fire`→`rm`. Agent rules are inlined as a heredoc variable and injected via `--append-system-prompt`.
 
 ### Patch workflow
 
 ```
-Agent writes code → git format-patch → ~/src/patch/
-Reviewer applies patch → runs tests → writes .review-<name>.md
-  Accept → amend with Reviewed-by: → copy to ~/src/merge-queue/
-  Needs-work → author revises → new patch → re-review
-Human applies from ~/src/merge-queue/ with git am
+Agent writes code → make test → git format-patch → ~/src/merge-queue/<repo>/
+Human runs mickey am → verifies patches → applies with git am → optionally pushes
 ```
 
-When given no specific task, agents automatically pick up work: review unreviewed patches by others (priority 1), or address review feedback on their own patches (priority 2). Agent identity is determined by `$HOSTNAME` matching the `<agent>` field in patch filenames.
+Agents claim TODOs by creating `.wip` lock files in `~/src/wip/`. TODOs are selected at random with a random delay to reduce collisions between agents.
 
 ### Workspace layout (inside sandboxes)
 
 | Path | Purpose |
 |------|---------|
-| `$WORKSPACE_DIR/` (`~/src/`) | Synced to host. Agents must NOT modify directly (except patch/merge-queue). |
+| `$WORKSPACE_DIR/` (`~/src/`) | Synced to host. Agents must NOT modify directly (except wip/merge-queue). |
 | `$WORKSPACE_DIR/repos/` | Git repos (read-only). Agents clone from here. |
 | `~/work/` | Local workspace. Agents clone repos here. |
-| `$WORKSPACE_DIR/patch/` | Shared patch mailing list. |
-| `$WORKSPACE_DIR/merge-queue/` | Merge queue (reviewed patches with `Reviewed-by:` tags). |
+| `$WORKSPACE_DIR/wip/` | Work-in-progress lock files for TODO claims. |
+| `$WORKSPACE_DIR/merge-queue/<repo>/` | Merge queue organized by repo (patches ready for human to apply). |
 
 ## Testing
 

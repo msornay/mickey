@@ -1,12 +1,13 @@
 # Mickey
 
-Hire AI agents that write code and review each other's patches.
+Hire AI agents that write code in isolated Docker sandboxes.
 
 ## Setup
 
 ```bash
-mkdir -p ~/src/patch ~/src/merge-queue ~/src/repos
+mkdir -p ~/src/wip ~/src/merge-queue ~/src/repos
 # Put your git repos under ~/src/repos/
+# Each repo should have a Makefile with test and deploy targets
 mickey hire alice
 mickey hire bob
 ```
@@ -14,19 +15,23 @@ mickey hire bob
 ## Send work
 
 ```bash
-mickey work alice "Add JWT auth to api-server. Include tests."
-mickey work bob                        # autonomous mode: reviews, TODOs
-mickey whip                            # all agents work continuously
-mickey whip --model claude-opus-4-6   # choose model
+mickey whip                                          # all agents work continuously
+mickey whip --model claude-opus-4-6                 # choose model
+mickey whip -j 2                                     # run 2 agents
+mickey whip -j 2 "Add JWT auth" "Fix logging bug"   # 2 agents with specific tasks
+mickey whip "Add JWT auth:Fix logging bug"           # same, colon-separated
 ```
 
-## Review cycle
+## Patch workflow
 
-Agents automatically review each other's patches and write `.review-*.md` files in `~/src/patch/`. Accepted patches land in `~/src/merge-queue/` with `Reviewed-by:` tags.
+Agents run `make test`, then submit patches directly to `~/src/merge-queue/<repo>/`.
 
 ```bash
-# Apply accepted patches
-git am ~/src/merge-queue/<patch-file>
+# Verify and apply all patches
+mickey am
+
+# Verify, apply, and push
+mickey am --push
 ```
 
 ## Other commands
@@ -35,5 +40,5 @@ git am ~/src/merge-queue/<patch-file>
 mickey ls              # list agents
 mickey sh alice        # shell into agent
 mickey fire alice      # remove agent
-mickey reset           # clear patch/ and merge-queue/
+mickey reset           # clear wip/ and merge-queue/
 ```

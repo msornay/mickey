@@ -6,63 +6,46 @@ AGENT_RULES='# Agent Rules
 You are a developer agent working inside a Docker sandbox.
 
 ## Workspace layout
-- $WORKSPACE_DIR/ is synced to the host. **NEVER modify files here directly** — only write to patch/ and merge-queue/.
+- $WORKSPACE_DIR/ is synced to the host. **NEVER modify files here directly** — only write to wip/ and merge-queue/.
 - $WORKSPACE_DIR/repos/ contains git repos. **NEVER write to this directory or any repo inside it.** Only use it as a clone source.
 - ~/work/ is your local workspace (not synced). Clone repos here and do all work here.
-- $WORKSPACE_DIR/patch/ is the shared patch mailing list (submissions, reviews, revisions).
-- $WORKSPACE_DIR/merge-queue/ is the merge queue (accepted patches with `Reviewed-by:` tags, ready for the human to apply).
+- $WORKSPACE_DIR/wip/ is the shared work-in-progress directory. Create lock files here to claim TODOs you are working on.
+- $WORKSPACE_DIR/merge-queue/<repo>/ is the merge queue, organized by repo. Patches here are ready for the human to apply.
 
 ## Default behavior
 
-If you are given no specific task (empty or missing instructions), pick up useful work automatically using this priority order:
+If you are given no specific task (empty or missing instructions), pick up useful work automatically:
 
-### Priority 1: Review an unreviewed patch by someone else
-
-Your agent name is `$HOSTNAME`. Look in `$WORKSPACE_DIR/patch/` for `.patch` files where the `<agent>` field in the filename does NOT match `$HOSTNAME`.
-
-Patch filenames follow the convention: `TIMESTAMP-<repo>-<agent>-<short-name>.patch`
-
-For each unique `<repo>-<agent>-<short-name>` group, only the latest patch (highest timestamp) matters — earlier versions are superseded.
-
-A patch is **unreviewed** if no file matching `*-<repo>-<agent>-<short-name>.review-*.md` exists with a timestamp >= the patch'\''s timestamp.
-
-Pick the oldest unreviewed patch by someone else and review it using the "Reviewing patches" process below.
-
-### Priority 2: Address review feedback on your own patch
-
-Look for `.review-*.md` files in `$WORKSPACE_DIR/patch/` that reference one of your patches (where `<agent>` matches `$HOSTNAME`) and contain `Verdict: needs-work`.
-
-A review needs addressing if you haven'\''t produced a newer patch revision — i.e., no `.patch` file for the same `<repo>-<agent>-<short-name>` group has a timestamp newer than the review file.
-
-Pick the oldest such review and revise your patch using the "Revising patches" process below.
-
-### Priority 3: Pick up a TODO from a repo
-
-If there are no patches to review and no review feedback to address, look for TODOs in the repos.
+### Pick up a TODO from a repo
 
 1. Search all repos in `$WORKSPACE_DIR/repos/` for TODO/FIXME/HACK/XXX comments:
    ```
    grep -rn '\''TODO\|FIXME\|HACK\|XXX'\'' $WORKSPACE_DIR/repos/
    ```
 2. Also check for a `TODO.md` or `TODO` file in each repo root.
-3. Before picking a TODO, check that no existing `.patch` file in `$WORKSPACE_DIR/patch/` already addresses it — scan patch filenames and commit subjects for keywords from the TODO:
+3. Also check for **implicit TODOs**: repos that do not follow standard conventions. Every repo should have a Makefile with at least these targets: `test` (sanity tests), `deploy` (deployment automation). If a repo is missing these, creating them is an implicit TODO.
+4. Before picking a TODO, check that no existing `.patch` file in `$WORKSPACE_DIR/merge-queue/` already addresses it — scan patch filenames and commit subjects for keywords from the TODO:
    ```
-   grep -li '\''<keyword>'\'' $WORKSPACE_DIR/patch/*.patch 2>/dev/null
+   grep -rli '\''<keyword>'\'' $WORKSPACE_DIR/merge-queue/ 2>/dev/null
    ```
-   Skip TODOs that already have a corresponding patch (even if unreviewed).
-4. Skip TODOs that already have a `.wip` file in `$WORKSPACE_DIR/patch/` — another agent is already working on it. `.wip` filenames follow the same convention: `TIMESTAMP-<repo>-<agent>-<short-name>.wip`.
-5. Pick one actionable TODO — prefer ones that are small, self-contained, and have clear intent.
-6. Skip TODOs that are vague, require external context you don'\''t have, or would need architectural decisions.
-7. Claim the TODO by creating a `.wip` file before starting work:
+   Skip TODOs that already have a corresponding patch.
+5. Skip TODOs that already have a `.wip` file in `$WORKSPACE_DIR/wip/` — another agent is already working on it. `.wip` filenames follow the convention: `TIMESTAMP-<repo>-<agent>-<short-name>.wip`.
+6. **Skip TODOs that have unmet prerequisites.** If a TODO depends on other TODOs being completed first (e.g., it references another task, needs infrastructure that doesn'\''t exist yet, or is sequenced after other items in TODO.md), skip it. Only pick TODOs whose prerequisites are already done or that have no dependencies.
+7. Collect all actionable TODOs into a list and **select one at random**. Do NOT always pick the first or "most important" one — randomize to reduce collision with other agents.
+8. Before selecting, **wait a random delay between 0 and 10 seconds** to reduce the chance of two agents claiming the same TODO simultaneously:
    ```
-   touch $WORKSPACE_DIR/patch/$(date +%Y%m%d-%H%M%S)-<repo>-$(hostname)-<short-name>.wip
+   sleep $((RANDOM % 10))
    ```
-8. Work on it using the normal "Starting work" and "Producing output" process. Use the TODO text as the basis for your `<short-name>` in the patch filename.
-9. In your commit message, reference the original TODO (file and line number) so reviewers can trace it back.
+9. Claim the TODO by creating a `.wip` file:
+   ```
+   touch $WORKSPACE_DIR/wip/$(date +%Y%m%d-%H%M%S)-<repo>-$(hostname)-<short-name>.wip
+   ```
+10. Work on it using the normal "Starting work" and "Producing output" process. Use the TODO text as the basis for your `<short-name>` in the patch filename.
+11. In your commit message, reference the original TODO (file and line number) so it can be traced back.
 
-### If there'\''s nothing to do
+### If there is nothing to do
 
-If there are no unreviewed patches by others, no pending review feedback on your patches, and no actionable TODOs in the repos, say so and stop.
+If there are no actionable TODOs (explicit or implicit) in the repos, say so and stop.
 
 ## Starting work
 1. Get the repo(s) you need. If ~/work/<repo> doesn'\''t exist, clone it:
@@ -77,125 +60,81 @@ If there are no unreviewed patches by others, no pending review feedback on your
      git config user.email "$(hostname)+${ANTHROPIC_MODEL:-claude}@agent.local"
 
 ## Producing output
-When your task is complete and tests pass, squash to a single commit with a datetime-prefixed patch:
-```
-TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-cd ~/work/<repo>
-git checkout -b squash-tmp main
-git merge --squash <branch-name>
-git commit -m "<descriptive message>"
-git format-patch main --stdout > $WORKSPACE_DIR/patch/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
-```
+When your task is complete, run sanity tests and produce a patch:
 
-Verify the patch applies cleanly before moving on:
-```
-cd ~/work/<repo>
-git checkout main
-git am --check $WORKSPACE_DIR/patch/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
-```
-
-If it fails, fix your branch and regenerate the patch.
-
-If you created a `.wip` file for this work, delete it now that the `.patch` file exists:
-```
-rm -f $WORKSPACE_DIR/patch/*-<repo>-$(hostname)-<short-name>.wip
-```
-
-## Reviewing patches
-When asked to review a patch:
-
-1. Find the latest patch matching the name pattern in `$WORKSPACE_DIR/patch/`.
-2. Parse the repo name from the filename.
-3. Clone the repo into ~/work/ if not already there, or sync to latest main:
-   git clone $WORKSPACE_DIR/repos/<repo> ~/work/<repo>  # if new
-   cd ~/work/<repo> && git checkout main && git pull $WORKSPACE_DIR/repos/<repo> main
-4. Apply the patch:
+1. **Run sanity tests.** Every repo must have a Makefile with a `test` target. Run it before producing a patch:
    ```
-   git am $WORKSPACE_DIR/patch/<patch-file>
+   cd ~/work/<repo>
+   make test
    ```
-5. Read the code and run tests. Be opinionated — challenge the patch on simplicity, UNIX philosophy, KISS, and security. Mark `needs-work` if any are lacking.
-6. Get the HEAD commit hash:
-   ```
-   REVIEWED_COMMIT=$(git rev-parse HEAD)
-   ```
-7. Write a review file with a datetime prefix:
+   If tests fail, fix them before proceeding. Do NOT submit a patch with failing tests.
+
+2. **Squash to a single commit** with a datetime-prefixed patch:
    ```
    TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-   ```
-   File: `$WORKSPACE_DIR/patch/${TIMESTAMP}-<repo>-<agent>-<short-name>.review-<reviewer>.md`
-
-   Format:
-   ```
-   Reviewed-commit: <hash>
-   Verdict: accept | needs-work
-
-   ## Summary
-   ...
-
-   ## Comments
-   ...
-
-   ## Test results
-   ...
+   cd ~/work/<repo>
+   git checkout -b squash-tmp main
+   git merge --squash <branch-name>
+   git commit -m "<descriptive message>"
    ```
 
-8. **If accepting**: amend the commit to add `Reviewed-by:`, then produce the accepted patch into the merge queue:
-   ```
-   git commit --amend -m "$(git log -1 --format=%B)
-
-   Reviewed-by: <reviewer>"
-   TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-   git format-patch main --stdout > $WORKSPACE_DIR/merge-queue/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
-   ```
-   The human applies patches from `$WORKSPACE_DIR/merge-queue/` — every patch there has `Reviewed-by:` tags.
-
-9. **If the patch addresses a repo TODO**: check the commit message for TODO references. If the repo has a `TODO.md` (or `TODO`) file and the patch clearly addresses one of its items, remove the addressed line(s) from that file, stage the change, amend the commit, and regenerate the merge-queue patch:
+3. **If the patch addresses a repo TODO**: check if the repo has a `TODO.md` (or `TODO`) file and the commit clearly addresses one of its items. If so, remove the addressed line(s) from that file and amend the commit:
    ```
    # edit TODO.md to remove the addressed item(s)
    git add TODO.md
    git commit --amend --no-edit
-   git format-patch main --stdout > $WORKSPACE_DIR/merge-queue/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
    ```
 
-10. **Verify the merge-queue patch applies cleanly**. Reset main to before the patch, re-apply from the merge-queue file, then restore main to the accepted commit (using the same `$TIMESTAMP` from step 8):
+4. **Create the merge-queue subdirectory if needed and produce the patch:**
    ```
-   ACCEPTED=$(git rev-parse HEAD)
-   git reset --hard HEAD~1
-   git am $WORKSPACE_DIR/merge-queue/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
-   git reset --hard $ACCEPTED
+   mkdir -p $WORKSPACE_DIR/merge-queue/<repo>
+   git format-patch main --stdout > $WORKSPACE_DIR/merge-queue/<repo>/${TIMESTAMP}-$(hostname)-<short-name>.patch
    ```
-   If `git am` fails, run `git am --abort && git reset --hard $ACCEPTED` to restore the repo, then fix and re-produce the merge-queue patch before finishing.
 
-## Revising patches
-When asked to address review feedback:
+5. **Verify the patch applies cleanly:**
+   ```
+   cd ~/work/<repo>
+   git checkout main
+   git am --check $WORKSPACE_DIR/merge-queue/<repo>/${TIMESTAMP}-$(hostname)-<short-name>.patch
+   ```
+   If it fails, fix your branch and regenerate the patch.
 
-1. Read the review file (verdict: needs-work) in `$WORKSPACE_DIR/patch/`.
-2. The `Reviewed-commit:` hash identifies which patch version was reviewed.
-3. Fix the issues in `~/work/<repo>`, make new commits on your branch.
-4. Produce a new patch with a new timestamp (the old patch stays as history):
+6. **Clean up the wip file** if you created one for this work:
    ```
-   TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-   git checkout -b squash-tmp main
-   git merge --squash <branch-name>
-   git commit -m "<descriptive message>"
-   git format-patch main --stdout > $WORKSPACE_DIR/patch/${TIMESTAMP}-<repo>-<agent>-<short-name>.patch
+   rm -f $WORKSPACE_DIR/wip/*-<repo>-$(hostname)-<short-name>.wip
    ```
+
+## Deployment awareness
+Deploying code is done by a human, not by agents. When your work involves deployment-relevant changes (configuration, infrastructure, environment variables, etc.):
+
+1. Write clear documentation about the deployment steps needed.
+2. If the repo has a `deploy` target in its Makefile, ensure your changes are compatible with it.
+3. If the repo does NOT have a `deploy` target and your changes require deployment steps, create one as part of your patch. The `deploy` target should automate the configured deployment process.
+4. Include deployment notes in your commit message when relevant.
 
 ## Rules
-- NEVER write to $WORKSPACE_DIR/ except $WORKSPACE_DIR/patch/ and $WORKSPACE_DIR/merge-queue/. In particular, NEVER modify, create, or delete files under $WORKSPACE_DIR/repos/. Corrupting host repos is unrecoverable.
+- NEVER write to $WORKSPACE_DIR/ except $WORKSPACE_DIR/wip/ and $WORKSPACE_DIR/merge-queue/. In particular, NEVER modify, create, or delete files under $WORKSPACE_DIR/repos/. Corrupting host repos is unrecoverable.
 - NEVER enter plan mode. Do the work directly and produce a patch.
 - NEVER push to any remote
 - NEVER create pull requests
-- Always run tests before producing a patch
-- Make clean, atomic commits with good messages'
+- Always run `make test` before producing a patch. Never submit a patch with failing sanity tests.
+- Make clean, atomic commits with good messages
+- Select TODOs at random — do not always pick the same one'
 
-warn_writable_repos() {
+DEFAULT_PROMPT="Follow your default behavior instructions: find TODOs in repos and work on them."
+
+lock_repos() {
   local repos_dir="${WORKSPACE_DIR:-$HOME/src}/repos"
   [[ -d "$repos_dir" ]] || return 0
-  if find "$repos_dir" -maxdepth 1 -writable -print -quit 2>/dev/null | grep -q .; then
-    echo "Warning: $repos_dir is writable — agents may accidentally modify source repos." >&2
-    echo "         Run: chmod -R a-w $repos_dir" >&2
-  fi
+  chmod -R a-w "$repos_dir"
+  echo "Locked $repos_dir (read-only)." >&2
+}
+
+unlock_repos() {
+  local repos_dir="${WORKSPACE_DIR:-$HOME/src}/repos"
+  [[ -d "$repos_dir" ]] || return 0
+  chmod -R u+w "$repos_dir"
+  echo "Unlocked $repos_dir (writable)." >&2
 }
 
 usage() {
@@ -203,13 +142,13 @@ usage() {
 Usage: mickey <command> [args]
 
 Commands:
-  hire <name>                              Create agent and auth (interactive)
-  work [--model <model>] <name> ["<prompt>"] Send task to agent (auto-picks work if no prompt)
-  whip [--model <model>]                   Send all agents to work continuously (Ctrl-C to stop)
-  sh   <name>                              Shell into agent
-  ls                                       List agents
-  fire <name>                              Remove agent
-  reset                                    Clear patch/ and merge-queue/ (with confirmation)
+  hire  <name>                               Create agent and auth (interactive)
+  whip  [--model <model>] [-j N] [prompts]   Send agents to work (Ctrl-C to stop)
+  sh    <name>                               Shell into agent
+  ls                                         List agents
+  fire  <name>                               Remove agent
+  am    [--push]                             Verify and apply patches from merge-queue/
+  reset                                      Clear wip/ and merge-queue/ (with confirmation)
 USAGE
   exit 1
 }
@@ -224,37 +163,60 @@ case "$cmd" in
     docker sandbox create --name "$1" claude ~/src
     docker sandbox run "$1"
     ;;
-  work)
-    warn_writable_repos
-    model=""
-    if [[ "${1:-}" == "--model" ]]; then
-      [[ $# -lt 2 ]] && { echo "Usage: mickey work [--model <model>] <name> [\"<prompt>\"]"; exit 1; }
-      shift; model="$1"; shift
-    fi
-    [[ $# -lt 1 ]] && { echo "Usage: mickey work [--model <model>] <name> [\"<prompt>\"]"; exit 1; }
-    name=$1; shift
-    prompt="${*:-Follow your default behavior instructions: review unreviewed patches by others, address review feedback on your own patches, or find TODOs in repos and work on them.}"
-    if [[ -n "$model" ]]; then
-      ANTHROPIC_MODEL="$model" docker sandbox run "$name" -- --append-system-prompt "$AGENT_RULES" -p "$prompt"
-    else
-      docker sandbox run "$name" -- --append-system-prompt "$AGENT_RULES" -p "$prompt"
-    fi
-    ;;
   whip)
-    warn_writable_repos
     model=""
     if [[ "${1:-}" == "--model" ]]; then
-      [[ $# -lt 2 ]] && { echo "Usage: mickey whip [--model <model>]"; exit 1; }
+      [[ $# -lt 2 ]] && { echo "Usage: mickey whip [--model <model>] [-j N] [prompts...]"; exit 1; }
       shift; model="$1"; shift
     fi
-    trap 'kill 0; exit 0' INT TERM
-    names=$(docker sandbox ls | awk 'NR>1 {print $1}')
-    if [[ -z "$names" ]]; then
-      echo "No agents found."
+
+    # Determine mode and collect prompts
+    prompts=()
+    agent_count=0
+
+    if [[ "${1:-}" == "-j" ]]; then
+      [[ $# -lt 2 ]] && { echo "Usage: mickey whip [--model <model>] -j <N> [prompts...]"; exit 1; }
+      shift; agent_count=$1; shift
+      # Remaining args are prompts
+      prompts=("$@")
+    elif [[ $# -gt 0 ]]; then
+      # Colon-separated prompts: each segment becomes one agent's prompt
+      joined="$*"
+      IFS=':' read -ra prompts <<< "$joined"
+      agent_count=${#prompts[@]}
+    fi
+
+    # Get available agents
+    all_names=$(docker sandbox ls | awk 'NR>1 {print $1}')
+    if [[ -z "$all_names" ]]; then
+      echo "No agents found. Hire some first: mickey hire <name>"
       exit 0
     fi
+
+    # Select agents
+    if [[ $agent_count -gt 0 ]]; then
+      names=()
+      while IFS= read -r n; do
+        names+=("$n")
+      done <<< "$all_names"
+      if [[ ${#names[@]} -lt $agent_count ]]; then
+        echo "Requested $agent_count agents but only ${#names[@]} available." >&2
+        exit 1
+      fi
+      selected=("${names[@]:0:$agent_count}")
+    else
+      selected=()
+      while IFS= read -r n; do
+        selected+=("$n")
+      done <<< "$all_names"
+    fi
+
+    lock_repos
+    trap 'kill 0; unlock_repos; exit 0' INT TERM EXIT
+
     first=true
-    for name in $names; do
+    for i in "${!selected[@]}"; do
+      name="${selected[$i]}"
       if [[ -n "$model" ]]; then
         agent_model="$model"
       elif $first; then
@@ -263,11 +225,20 @@ case "$cmd" in
       else
         agent_model="claude-sonnet-4-6"
       fi
+
+      # Assign prompt: from list if available, otherwise default
+      if [[ $i -lt ${#prompts[@]} ]] && [[ -n "${prompts[$i]}" ]]; then
+        agent_prompt="${prompts[$i]}"
+      else
+        agent_prompt="$DEFAULT_PROMPT"
+      fi
+
       (
         while true; do
           echo "Sending $name to work ($agent_model)..."
           exit_code=0
-          "$0" work --model "$agent_model" "$name" || exit_code=$?
+          ANTHROPIC_MODEL="$agent_model" docker sandbox run "$name" -- \
+            --append-system-prompt "$AGENT_RULES" -p "$agent_prompt" || exit_code=$?
           if [[ $exit_code -eq 1 ]]; then
             echo "$name exited with code 1 (credits exhausted?). Waiting 5 minutes before retry..." >&2
             sleep 300
@@ -288,20 +259,108 @@ case "$cmd" in
     [[ $# -lt 1 ]] && { echo "Usage: mickey fire <name>"; exit 1; }
     docker sandbox rm "$1"
     ;;
+  am)
+    push=false
+    if [[ "${1:-}" == "--push" ]]; then
+      push=true; shift
+    fi
+    ws="${WORKSPACE_DIR:-$HOME/src}"
+    repos_dir="$ws/repos"
+    queue_dir="$ws/merge-queue"
+
+    # Check merge-queue has patches
+    patch_count=$(find "$queue_dir" -name '*.patch' -type f 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$patch_count" -eq 0 ]]; then
+      echo "No patches in $queue_dir."
+      exit 0
+    fi
+
+    # Step 1: Lock repos to read-only
+    lock_repos
+
+    # Step 2: Launch agent to verify all patches apply cleanly
+    echo "Verifying $patch_count patch(es) apply cleanly..."
+    verify_prompt="For each subdirectory in $queue_dir, the directory name is a repo name. For each repo, check that all .patch files in that subdirectory apply cleanly to the corresponding repo in $repos_dir:
+For each repo dir in $queue_dir/:
+  cd ~/work/<repo> (clone from $repos_dir/<repo> if needed, or pull latest main)
+  git checkout main
+  For each .patch file (sorted by name):
+    git am --check <patch-file>
+Report which patches pass and which fail. Do NOT apply patches for real — only use --check."
+
+    agent=$(docker sandbox ls | awk 'NR>1 {print $1; exit}')
+    if [[ -z "$agent" ]]; then
+      echo "No agents available. Hire one first: mickey hire <name>" >&2
+      unlock_repos
+      exit 1
+    fi
+
+    verify_exit=0
+    ANTHROPIC_MODEL="claude-sonnet-4-6" docker sandbox run "$agent" -- \
+      --append-system-prompt "$AGENT_RULES" -p "$verify_prompt" || verify_exit=$?
+
+    # Step 3: Restore write permissions
+    unlock_repos
+
+    if [[ $verify_exit -ne 0 ]]; then
+      echo "Verification failed (agent exited $verify_exit). Patches NOT applied." >&2
+      exit 1
+    fi
+
+    # Step 4: Apply patches for real (in bash, not using the agent)
+    echo "Applying patches..."
+    for repo_dir in "$queue_dir"/*/; do
+      [[ -d "$repo_dir" ]] || continue
+      repo=$(basename "$repo_dir")
+      target="$repos_dir/$repo"
+      if [[ ! -d "$target/.git" ]]; then
+        echo "Warning: $target is not a git repo, skipping." >&2
+        continue
+      fi
+      for patch_file in "$repo_dir"*.patch; do
+        [[ -f "$patch_file" ]] || continue
+        echo "  Applying $(basename "$patch_file") to $repo..."
+        (cd "$target" && git am "$patch_file") || {
+          echo "FAILED to apply $(basename "$patch_file") to $repo. Aborting." >&2
+          (cd "$target" && git am --abort 2>/dev/null || true)
+          exit 1
+        }
+        rm "$patch_file"
+      done
+    done
+    echo "All patches applied."
+
+    # Step 5: Push if --push was given
+    if $push; then
+      echo "Pushing repos..."
+      for repo_dir in "$queue_dir"/*/; do
+        [[ -d "$repo_dir" ]] || continue
+        repo=$(basename "$repo_dir")
+        target="$repos_dir/$repo"
+        [[ -d "$target/.git" ]] || continue
+        echo "  Pushing $repo main..."
+        (cd "$target" && git push origin main) || {
+          echo "FAILED to push $repo." >&2
+          exit 1
+        }
+      done
+      echo "All repos pushed."
+    fi
+    ;;
   reset)
     ws="${WORKSPACE_DIR:-$HOME/src}"
-    patch_dir="$ws/patch"
+    wip_dir="$ws/wip"
     queue_dir="$ws/merge-queue"
-    patch_count=$(find "$patch_dir" -maxdepth 1 -type f ! -name '.DS_Store' 2>/dev/null | wc -l)
-    queue_count=$(find "$queue_dir" -maxdepth 1 -type f ! -name '.DS_Store' 2>/dev/null | wc -l)
+    wip_count=$(find "$wip_dir" -type f ! -name '.DS_Store' 2>/dev/null | wc -l | tr -d ' ')
+    queue_count=$(find "$queue_dir" -type f ! -name '.DS_Store' 2>/dev/null | wc -l | tr -d ' ')
     echo "This will delete:"
-    echo "  $patch_count file(s) in $patch_dir"
+    echo "  $wip_count file(s) in $wip_dir"
     echo "  $queue_count file(s) in $queue_dir"
     printf "Continue? [y/N] "
     read -r answer
     [[ "$answer" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
-    find "$patch_dir" -maxdepth 1 -type f ! -name '.DS_Store' -delete 2>/dev/null || true
-    find "$queue_dir" -maxdepth 1 -type f ! -name '.DS_Store' -delete 2>/dev/null || true
+    find "$wip_dir" -type f ! -name '.DS_Store' -delete 2>/dev/null || true
+    find "$queue_dir" -type f ! -name '.DS_Store' -delete 2>/dev/null || true
     echo "Done."
     ;;
   *)
