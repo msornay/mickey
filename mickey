@@ -137,13 +137,36 @@ unlock_repos() {
   echo "Unlocked $repos_dir (writable)." >&2
 }
 
+check_limits() {
+  python3 "$(dirname "$0")/check_limits.py"
+}
+
+# Start a background limit monitor. Returns the PID.
+# Usage: start_limit_monitor; ... ; stop_limit_monitor
+start_limit_monitor() {
+  check_limits || return 1
+  (
+    trap 'exit 0' INT TERM
+    while sleep 120; do
+      check_limits && continue
+      echo "Limit reached. Stopping..." >&2
+      kill 0
+    done
+  ) &
+  _limit_monitor_pid=$!
+}
+
+stop_limit_monitor() {
+  [[ -n "${_limit_monitor_pid:-}" ]] && kill "$_limit_monitor_pid" 2>/dev/null || true
+}
+
 usage() {
   cat <<'USAGE'
 Usage: mickey <command> [args]
 
 Commands:
   hire  <name>                               Create agent and auth (interactive)
-  whip  [--model <model>] [-j N] [prompts]   Send agents to work (Ctrl-C to stop)
+  whip  [--model M] [--ignore-limits] [-j N]  Send agents to work (Ctrl-C to stop)
   sh    <name>                               Shell into agent
   ls                                         List agents
   fire  <name>                               Remove agent
@@ -165,10 +188,19 @@ case "$cmd" in
     ;;
   whip)
     model=""
-    if [[ "${1:-}" == "--model" ]]; then
-      [[ $# -lt 2 ]] && { echo "Usage: mickey whip [--model <model>] [-j N] [prompts...]"; exit 1; }
-      shift; model="$1"; shift
-    fi
+    ignore_limits=false
+    while [[ "${1:-}" == --* ]]; do
+      case "$1" in
+        --model)
+          [[ $# -lt 2 ]] && { echo "Usage: mickey whip [--model <model>] [--ignore-limits] [-j N] [prompts...]"; exit 1; }
+          shift; model="$1"; shift
+          ;;
+        --ignore-limits)
+          ignore_limits=true; shift
+          ;;
+        *) break ;;
+      esac
+    done
 
     # Determine mode and collect prompts
     prompts=()
@@ -213,6 +245,10 @@ case "$cmd" in
 
     lock_repos
     trap 'kill 0; unlock_repos; exit 0' INT TERM EXIT
+
+    if ! $ignore_limits; then
+      start_limit_monitor || { echo "Limit too high to start." >&2; unlock_repos; exit 1; }
+    fi
 
     first=true
     for i in "${!selected[@]}"; do
@@ -281,15 +317,24 @@ case "$cmd" in
     # Step 1: Lock repos to read-only
     lock_repos
 
-    # Step 2: Launch agent to verify all patches apply cleanly
-    echo "Verifying $patch_count patch(es) apply cleanly..."
-    verify_prompt="For each subdirectory in $queue_dir, the directory name is a repo name. For each repo, check that all .patch files in that subdirectory apply cleanly to the corresponding repo in $repos_dir:
-For each repo dir in $queue_dir/:
-  cd ~/work/<repo> (clone from $repos_dir/<repo> if needed, or pull latest main)
-  git checkout main
-  For each .patch file (sorted by name):
-    git am --check <patch-file>
-Report which patches pass and which fail. Do NOT apply patches for real — only use --check."
+    # Step 2: Launch agent to verify and fix all patches
+    echo "Verifying $patch_count patch(es)..."
+    verify_prompt="Your goal: ensure every .patch file in $queue_dir applies cleanly. Do NOT stop until all patches pass.
+
+For each subdirectory in $queue_dir/, the directory name is a repo name.
+
+For each repo:
+  1. Clone or update: cd ~/work/<repo> (clone from $repos_dir/<repo> if needed, or git checkout main && git pull)
+  2. Try each .patch file (sorted by name): git am --check <patch-file>
+  3. If a patch fails:
+     - Diagnose the conflict (check what changed in main since the patch was created)
+     - Apply the patch with git am in a temporary branch, resolve conflicts manually
+     - Regenerate a clean patch: git format-patch main --stdout > <same-patch-path>
+     - Reset to main and verify the new patch: git checkout main && git am --check <patch-file>
+     - Repeat until it applies cleanly
+  4. If a patch is truly unfixable (e.g. the entire feature was already landed), delete it from $queue_dir
+
+When finished, every remaining patch in $queue_dir must pass git am --check. Do a final pass to confirm."
 
     agent=$(docker sandbox ls | awk 'NR>1 {print $1; exit}')
     if [[ -z "$agent" ]]; then
@@ -298,9 +343,13 @@ Report which patches pass and which fail. Do NOT apply patches for real — only
       exit 1
     fi
 
+    start_limit_monitor || { echo "Limit too high to run am." >&2; unlock_repos; exit 1; }
+
     verify_exit=0
     ANTHROPIC_MODEL="claude-sonnet-4-6" docker sandbox run "$agent" -- \
       --append-system-prompt "$AGENT_RULES" -p "$verify_prompt" || verify_exit=$?
+
+    stop_limit_monitor
 
     # Step 3: Restore write permissions
     unlock_repos
