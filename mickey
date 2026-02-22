@@ -24,24 +24,24 @@ If you are given no specific task (empty or missing instructions), pick up usefu
    ```
 2. Also check for a `TODO.md` or `TODO` file in each repo root.
 3. Also check for **implicit TODOs**: repos that do not follow standard conventions. Every repo should have a Makefile with at least these targets: `test` (sanity tests), `deploy` (deployment automation). If a repo is missing these, creating them is an implicit TODO.
-4. Before picking a TODO, check that no existing `.patch` file in `$WORKSPACE_DIR/merge-queue/` already addresses it — scan patch filenames and commit subjects for keywords from the TODO:
-   ```
-   grep -rli '\''<keyword>'\'' $WORKSPACE_DIR/merge-queue/ 2>/dev/null
-   ```
-   Skip TODOs that already have a corresponding patch.
-5. Skip TODOs that already have a `.wip` file in `$WORKSPACE_DIR/wip/` — another agent is already working on it. `.wip` filenames follow the convention: `TIMESTAMP-<repo>-<agent>-<short-name>.wip`.
+4. **Check existing patches.** Read patch files in `$WORKSPACE_DIR/merge-queue/<repo>/` and examine their commit messages (the `Subject:` line). Skip TODOs already addressed by an existing patch.
+5. **Check for in-progress work.** Read all `.wip` files in `$WORKSPACE_DIR/wip/`. Each is a short message from another agent describing what they'\''re working on. Skip any TODO that overlaps with an existing wip message (same repo and similar intent, even if worded differently).
 6. **Skip TODOs that have unmet prerequisites.** If a TODO depends on other TODOs being completed first (e.g., it references another task, needs infrastructure that doesn'\''t exist yet, or is sequenced after other items in TODO.md), skip it. Only pick TODOs whose prerequisites are already done or that have no dependencies.
 7. Collect all actionable TODOs into a list and **select one at random**. Do NOT always pick the first or "most important" one — randomize to reduce collision with other agents.
-8. Before selecting, **wait a random delay between 0 and 10 seconds** to reduce the chance of two agents claiming the same TODO simultaneously:
+8. **Wait a random delay between 0 and 30 seconds** to stagger agent starts:
    ```
-   sleep $((RANDOM % 10))
+   sleep $((RANDOM % 30))
    ```
-9. Claim the TODO by creating a `.wip` file:
+9. **Re-read wip/** after the delay — another agent may have claimed the same TODO while you waited. If your chosen TODO now overlaps with a new wip message, pick a different one.
+10. Claim the TODO by posting a `.wip` file describing your intent:
    ```
-   touch $WORKSPACE_DIR/wip/$(date +%Y%m%d-%H%M%S)-<repo>-$(hostname)-<short-name>.wip
+   cat > $WORKSPACE_DIR/wip/$(date +%Y%m%d-%H%M%S)-$(hostname).wip <<WIP
+   repo: <repo>
+   task: <one-line description of what you are about to do>
+   WIP
    ```
-10. Work on it using the normal "Starting work" and "Producing output" process. Use the TODO text as the basis for your `<short-name>` in the patch filename.
-11. In your commit message, reference the original TODO (file and line number) so it can be traced back.
+11. Work on it using the normal "Starting work" and "Producing output" process.
+12. In your commit message, reference the original TODO (file and line number) so it can be traced back.
 
 ### If there is nothing to do
 
@@ -99,9 +99,9 @@ When your task is complete, run sanity tests and produce a patch:
    ```
    If it fails, fix your branch and regenerate the patch.
 
-6. **Clean up the wip file** if you created one for this work:
+6. **Clean up your wip file** after submitting the patch:
    ```
-   rm -f $WORKSPACE_DIR/wip/*-<repo>-$(hostname)-<short-name>.wip
+   rm -f $WORKSPACE_DIR/wip/*-$(hostname).wip
    ```
 
 ## Deployment awareness
