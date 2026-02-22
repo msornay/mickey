@@ -137,36 +137,13 @@ unlock_repos() {
   echo "Unlocked $repos_dir (writable)." >&2
 }
 
-check_limits() {
-  python3 "$(dirname "$0")/check_limits.py"
-}
-
-# Start a background limit monitor. Returns the PID.
-# Usage: start_limit_monitor; ... ; stop_limit_monitor
-start_limit_monitor() {
-  check_limits || return 1
-  (
-    trap 'exit 0' INT TERM
-    while sleep 120; do
-      check_limits && continue
-      echo "Limit reached. Stopping..." >&2
-      kill 0
-    done
-  ) &
-  _limit_monitor_pid=$!
-}
-
-stop_limit_monitor() {
-  [[ -n "${_limit_monitor_pid:-}" ]] && kill "$_limit_monitor_pid" 2>/dev/null || true
-}
-
 usage() {
   cat <<'USAGE'
 Usage: mickey <command> [args]
 
 Commands:
   hire  <name>                               Create agent and auth (interactive)
-  whip  [--model M] [--ignore-limits] [-j N]  Send agents to work (Ctrl-C to stop)
+  whip  [--model <model>] [-j N] [prompts]   Send agents to work (Ctrl-C to stop)
   sh    <name>                               Shell into agent
   ls                                         List agents
   fire  <name>                               Remove agent
@@ -188,19 +165,10 @@ case "$cmd" in
     ;;
   whip)
     model=""
-    ignore_limits=false
-    while [[ "${1:-}" == --* ]]; do
-      case "$1" in
-        --model)
-          [[ $# -lt 2 ]] && { echo "Usage: mickey whip [--model <model>] [--ignore-limits] [-j N] [prompts...]"; exit 1; }
-          shift; model="$1"; shift
-          ;;
-        --ignore-limits)
-          ignore_limits=true; shift
-          ;;
-        *) break ;;
-      esac
-    done
+    if [[ "${1:-}" == "--model" ]]; then
+      [[ $# -lt 2 ]] && { echo "Usage: mickey whip [--model <model>] [-j N] [prompts...]"; exit 1; }
+      shift; model="$1"; shift
+    fi
 
     # Determine mode and collect prompts
     prompts=()
@@ -245,10 +213,6 @@ case "$cmd" in
 
     lock_repos
     trap 'kill 0; unlock_repos; exit 0' INT TERM EXIT
-
-    if ! $ignore_limits; then
-      start_limit_monitor || { echo "Limit too high to start." >&2; unlock_repos; exit 1; }
-    fi
 
     first=true
     for i in "${!selected[@]}"; do
@@ -343,13 +307,9 @@ When finished, every remaining patch in $queue_dir must pass git am --check. Do 
       exit 1
     fi
 
-    start_limit_monitor || { echo "Limit too high to run am." >&2; unlock_repos; exit 1; }
-
     verify_exit=0
     ANTHROPIC_MODEL="claude-sonnet-4-6" docker sandbox run "$agent" -- \
       --append-system-prompt "$AGENT_RULES" -p "$verify_prompt" || verify_exit=$?
-
-    stop_limit_monitor
 
     # Step 3: Restore write permissions
     unlock_repos

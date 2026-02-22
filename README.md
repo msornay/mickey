@@ -2,6 +2,8 @@
 
 Hire AI agents that write code in isolated Docker sandboxes.
 
+Agents share `~/src/` with the host. Given a prompt they work on it; given nothing they scan repos for TODOs and pick one at random. They clone repos locally, work on a branch, run `make test`, and submit `git format-patch` output to a merge queue. You review and apply with `mickey am`.
+
 ## Setup
 
 ```bash
@@ -20,7 +22,6 @@ mickey whip --model claude-opus-4-6                 # choose model
 mickey whip -j 2                                     # run 2 agents
 mickey whip -j 2 "Add JWT auth" "Fix logging bug"   # 2 agents with specific tasks
 mickey whip "Add JWT auth:Fix logging bug"           # same, colon-separated
-mickey whip --ignore-limits                          # skip limit checks
 ```
 
 ## Patch workflow
@@ -34,12 +35,6 @@ mickey am
 # Verify, apply, and push
 mickey am --push
 ```
-
-## Rate limits
-
-`whip` and `am` check API limits before starting and every 2 minutes. They stop when the 5-hour window is >= 75% utilized or the weekly projection exceeds 95%. Use `--ignore-limits` to bypass this.
-
-Requires OAuth credentials in `~/.claude/.credentials.json`.
 
 ## Other commands
 
