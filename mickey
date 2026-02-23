@@ -190,17 +190,8 @@ case "$cmd" in
     }
     trap 'stop_all; exit 0' INT TERM EXIT
 
-    first=true
     for i in "${!selected[@]}"; do
       name="${selected[$i]}"
-      if [[ -n "$model" ]]; then
-        agent_model="$model"
-      elif $first; then
-        agent_model="claude-opus-4-6"
-        first=false
-      else
-        agent_model="claude-sonnet-4-6"
-      fi
 
       if [[ $i -lt ${#prompts[@]} ]] && [[ -n "${prompts[$i]}" ]]; then
         agent_prompt="${prompts[$i]}"
@@ -211,9 +202,15 @@ case "$cmd" in
       (
         trap 'kill %% 2>/dev/null; exit 0' INT TERM
         while true; do
-          echo "Sending $name to work ($agent_model)..."
-          ANTHROPIC_MODEL="$agent_model" docker sandbox run "$name" -- \
-            --append-system-prompt "$AGENT_RULES" -p "$agent_prompt" &
+          if [[ -n "$model" ]]; then
+            echo "Sending $name to work ($model)..."
+            ANTHROPIC_MODEL="$model" docker sandbox run "$name" -- \
+              --append-system-prompt "$AGENT_RULES" -p "$agent_prompt" &
+          else
+            echo "Sending $name to work..."
+            docker sandbox run "$name" -- \
+              --append-system-prompt "$AGENT_RULES" -p "$agent_prompt" &
+          fi
           wait $!
           exit_code=$?
           if [[ $exit_code -eq 1 ]]; then
