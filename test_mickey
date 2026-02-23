@@ -48,6 +48,11 @@ assert_output_matches "mickey hire" "hire without name shows correct usage" "$MI
 # -- whip: argument parsing --
 assert_exits 1 "whip --model without value exits 1" "$MICKEY" whip --model
 assert_exits 1 "whip -j without value exits 1" "$MICKEY" whip -j
+assert_exits 1 "whip -j 0 exits 1" "$MICKEY" whip -j 0
+assert_exits 1 "whip -j negative exits 1" "$MICKEY" whip -j -1
+assert_exits 1 "whip -j non-numeric exits 1" "$MICKEY" whip -j abc
+assert_output_matches "positive integer" "whip -j 0 shows error" "$MICKEY" whip -j 0
+assert_output_matches "positive integer" "whip -j abc shows error" "$MICKEY" whip -j abc
 
 # -- sh: missing name --
 assert_exits 1 "sh without name exits 1" "$MICKEY" sh

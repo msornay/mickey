@@ -165,6 +165,7 @@ case "$cmd" in
     if [[ "${1:-}" == "-j" ]]; then
       [[ $# -lt 2 ]] && { echo "Usage: mickey whip [--model <model>] -j <N> [prompts...]"; exit 1; }
       shift; agent_count=$1; shift
+      [[ "$agent_count" =~ ^[1-9][0-9]*$ ]] || { echo "Error: -j requires a positive integer, got '$agent_count'." >&2; exit 1; }
       prompts=("$@")
     elif [[ $# -gt 0 ]]; then
       IFS=':' read -ra prompts <<< "$*"
