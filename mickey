@@ -123,20 +123,6 @@ Deploying code is done by a human, not by agents. When your work involves deploy
 
 DEFAULT_PROMPT="Follow your default behavior instructions: find TODOs in repos and work on them."
 
-lock_repos() {
-  local repos_dir="${WORKSPACE_DIR:-$HOME/src}/repos"
-  [[ -d "$repos_dir" ]] || return 0
-  chmod -R a-w "$repos_dir"
-  echo "Locked $repos_dir (read-only)." >&2
-}
-
-unlock_repos() {
-  local repos_dir="${WORKSPACE_DIR:-$HOME/src}/repos"
-  [[ -d "$repos_dir" ]] || return 0
-  chmod -R u+w "$repos_dir"
-  echo "Unlocked $repos_dir (writable)." >&2
-}
-
 usage() {
   cat <<'USAGE'
 Usage: mickey <command> [args]
@@ -148,6 +134,8 @@ Commands:
   ls                                         List agents
   fire  <name>                               Remove agent
   am    [--push]                             Verify and apply patches from merge-queue/
+  lock                                       Make repos/ read-only
+  unlock                                     Restore repos/ write permissions
   reset                                      Clear wip/ and merge-queue/ (with confirmation)
 USAGE
   exit 1
@@ -177,42 +165,30 @@ case "$cmd" in
     if [[ "${1:-}" == "-j" ]]; then
       [[ $# -lt 2 ]] && { echo "Usage: mickey whip [--model <model>] -j <N> [prompts...]"; exit 1; }
       shift; agent_count=$1; shift
-      # Remaining args are prompts
       prompts=("$@")
     elif [[ $# -gt 0 ]]; then
-      # Colon-separated prompts: each segment becomes one agent's prompt
-      joined="$*"
-      IFS=':' read -ra prompts <<< "$joined"
+      IFS=':' read -ra prompts <<< "$*"
       agent_count=${#prompts[@]}
     fi
 
     # Get available agents
-    all_names=$(docker sandbox ls | awk 'NR>1 {print $1}')
-    if [[ -z "$all_names" ]]; then
-      echo "No agents found. Hire some first: mickey hire <name>"
-      exit 0
-    fi
+    all_names=()
+    while IFS= read -r n; do all_names+=("$n"); done < <(docker sandbox ls | awk 'NR>1 {print $1}')
+    [[ ${#all_names[@]} -eq 0 ]] && { echo "No agents found. Hire some first: mickey hire <name>"; exit 0; }
 
-    # Select agents
     if [[ $agent_count -gt 0 ]]; then
-      names=()
-      while IFS= read -r n; do
-        names+=("$n")
-      done <<< "$all_names"
-      if [[ ${#names[@]} -lt $agent_count ]]; then
-        echo "Requested $agent_count agents but only ${#names[@]} available." >&2
-        exit 1
-      fi
-      selected=("${names[@]:0:$agent_count}")
+      [[ ${#all_names[@]} -lt $agent_count ]] && { echo "Requested $agent_count agents but only ${#all_names[@]} available." >&2; exit 1; }
+      selected=("${all_names[@]:0:$agent_count}")
     else
-      selected=()
-      while IFS= read -r n; do
-        selected+=("$n")
-      done <<< "$all_names"
+      selected=("${all_names[@]}")
     fi
 
-    lock_repos
-    trap 'kill 0; unlock_repos; exit 0' INT TERM EXIT
+    stop_all() {
+      kill 0
+      for n in "${selected[@]}"; do docker sandbox stop "$n" 2>/dev/null & done
+      wait
+    }
+    trap 'stop_all; exit 0' INT TERM EXIT
 
     first=true
     for i in "${!selected[@]}"; do
@@ -226,7 +202,6 @@ case "$cmd" in
         agent_model="claude-sonnet-4-6"
       fi
 
-      # Assign prompt: from list if available, otherwise default
       if [[ $i -lt ${#prompts[@]} ]] && [[ -n "${prompts[$i]}" ]]; then
         agent_prompt="${prompts[$i]}"
       else
@@ -278,10 +253,7 @@ case "$cmd" in
       exit 0
     fi
 
-    # Step 1: Lock repos to read-only
-    lock_repos
-
-    # Step 2: Launch agent to verify and fix all patches
+    # Step 1: Launch agent to verify and fix all patches
     echo "Verifying $patch_count patch(es)..."
     verify_prompt="Your goal: ensure every .patch file in $queue_dir applies cleanly. Do NOT stop until all patches pass.
 
@@ -303,16 +275,12 @@ When finished, every remaining patch in $queue_dir must pass git am --check. Do 
     agent=$(docker sandbox ls | awk 'NR>1 {print $1; exit}')
     if [[ -z "$agent" ]]; then
       echo "No agents available. Hire one first: mickey hire <name>" >&2
-      unlock_repos
       exit 1
     fi
 
     verify_exit=0
     ANTHROPIC_MODEL="claude-sonnet-4-6" docker sandbox run "$agent" -- \
       --append-system-prompt "$AGENT_RULES" -p "$verify_prompt" || verify_exit=$?
-
-    # Step 3: Restore write permissions
-    unlock_repos
 
     if [[ $verify_exit -ne 0 ]]; then
       echo "Verification failed (agent exited $verify_exit). Patches NOT applied." >&2
@@ -358,6 +326,16 @@ When finished, every remaining patch in $queue_dir must pass git am --check. Do 
       done
       echo "All repos pushed."
     fi
+    ;;
+  lock)
+    repos_dir="${WORKSPACE_DIR:-$HOME/src}/repos"
+    chmod -R a-w "$repos_dir"
+    echo "Locked $repos_dir (read-only)."
+    ;;
+  unlock)
+    repos_dir="${WORKSPACE_DIR:-$HOME/src}/repos"
+    chmod -R u+w "$repos_dir"
+    echo "Unlocked $repos_dir (writable)."
     ;;
   reset)
     ws="${WORKSPACE_DIR:-$HOME/src}"
