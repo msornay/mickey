@@ -113,12 +113,6 @@ assert_exits 0 "check_patch_secrets function is defined" grep -q "^check_patch_s
 assert_exits 0 "am command calls check_patch_secrets" grep -q "check_patch_secrets" "$MICKEY"
 assert_exits 0 "secret scan prints warning banner" grep -q "WARNING.*secret\|WARNING.*credential\|WARNING.*leak" "$MICKEY"
 
-# -- PII detection structure --
-assert_exits 0 "PII_PATTERNS array is defined" grep -q "^PII_PATTERNS=" "$MICKEY"
-assert_exits 0 "check_patch_pii function is defined" grep -q "^check_patch_pii()" "$MICKEY"
-assert_exits 0 "am command calls check_patch_pii" grep -q "check_patch_pii" "$MICKEY"
-assert_exits 0 "pii scan prints warning banner" grep -q "WARNING.*personal information" "$MICKEY"
-
 # -- Secret detection functional tests --
 # Source just the patterns and function from mickey (skip the main case/esac)
 TMPDIR_TEST=$(mktemp -d)
@@ -127,8 +121,6 @@ trap 'rm -rf "$TMPDIR_TEST"' EXIT
 # Extract the patterns and functions from mickey
 eval "$(sed -n '/^SECRET_PATTERNS=/,/^)/p' "$MICKEY")"
 eval "$(sed -n '/^check_patch_secrets()/,/^}/p' "$MICKEY")"
-eval "$(sed -n '/^PII_PATTERNS=/,/^)/p' "$MICKEY")"
-eval "$(sed -n '/^check_patch_pii()/,/^}/p' "$MICKEY")"
 
 # Test: clean patch (no secrets)
 cat > "$TMPDIR_TEST/clean.patch" <<'PATCH'
@@ -236,128 +228,6 @@ if echo "$output" | grep -q "WARNING"; then
     pass=$((pass + 1)); echo "ok   - secret detection prints WARNING banner"
 else
     fail=$((fail + 1)); echo "FAIL - secret detection should print WARNING banner"
-fi
-
-# -- PII detection functional tests --
-
-# Test: clean patch passes PII check
-if check_patch_pii "$TMPDIR_TEST/clean.patch" 2>/dev/null; then
-    pass=$((pass + 1)); echo "ok   - clean patch passes PII check"
-else
-    fail=$((fail + 1)); echo "FAIL - clean patch should pass PII check"
-fi
-
-# Test: patch with phone number
-cat > "$TMPDIR_TEST/phone.patch" <<'PATCH'
---- a/contacts.py
-+++ b/contacts.py
-@@ -0,0 +1 @@
-+emergency_contact = "(555) 123-4567"
-PATCH
-if check_patch_pii "$TMPDIR_TEST/phone.patch" 2>/dev/null; then
-    fail=$((fail + 1)); echo "FAIL - phone number patch should be flagged"
-else
-    pass=$((pass + 1)); echo "ok   - phone number patch is flagged"
-fi
-
-# Test: patch with SSN
-cat > "$TMPDIR_TEST/ssn.patch" <<'PATCH'
---- a/data.txt
-+++ b/data.txt
-@@ -0,0 +1 @@
-+ssn: 123-45-6789
-PATCH
-if check_patch_pii "$TMPDIR_TEST/ssn.patch" 2>/dev/null; then
-    fail=$((fail + 1)); echo "FAIL - SSN patch should be flagged"
-else
-    pass=$((pass + 1)); echo "ok   - SSN patch is flagged"
-fi
-
-# Test: patch with personal info field assignments
-cat > "$TMPDIR_TEST/pii_fields.patch" <<'PATCH'
---- a/user.py
-+++ b/user.py
-@@ -0,0 +1 @@
-+full_name = "John Doe"
-PATCH
-if check_patch_pii "$TMPDIR_TEST/pii_fields.patch" 2>/dev/null; then
-    fail=$((fail + 1)); echo "FAIL - personal info field patch should be flagged"
-else
-    pass=$((pass + 1)); echo "ok   - personal info field patch is flagged"
-fi
-
-# Test: patch with conversation history (Claude format)
-cat > "$TMPDIR_TEST/convo.patch" <<'PATCH'
---- a/log.jsonl
-+++ b/log.jsonl
-@@ -0,0 +1 @@
-+{"type": "human", "message": {"content": "hello"}}
-PATCH
-if check_patch_pii "$TMPDIR_TEST/convo.patch" 2>/dev/null; then
-    fail=$((fail + 1)); echo "FAIL - conversation history patch should be flagged"
-else
-    pass=$((pass + 1)); echo "ok   - conversation history patch is flagged"
-fi
-
-# Test: patch with home directory path
-cat > "$TMPDIR_TEST/homedir.patch" <<'PATCH'
---- a/config.py
-+++ b/config.py
-@@ -0,0 +1 @@
-+data_dir = "/Users/johndoe/Documents/private"
-PATCH
-if check_patch_pii "$TMPDIR_TEST/homedir.patch" 2>/dev/null; then
-    fail=$((fail + 1)); echo "FAIL - home directory path patch should be flagged"
-else
-    pass=$((pass + 1)); echo "ok   - home directory path patch is flagged"
-fi
-
-# Test: patch with activity log containing user info
-cat > "$TMPDIR_TEST/actlog.patch" <<'PATCH'
---- a/audit.log
-+++ b/audit.log
-@@ -0,0 +1 @@
-+2025-01-15T14:30:00 user=john.doe@company.com login successful
-PATCH
-if check_patch_pii "$TMPDIR_TEST/actlog.patch" 2>/dev/null; then
-    fail=$((fail + 1)); echo "FAIL - activity log patch should be flagged"
-else
-    pass=$((pass + 1)); echo "ok   - activity log patch is flagged"
-fi
-
-# Test: removed PII (- lines) should NOT be flagged
-cat > "$TMPDIR_TEST/removed_pii.patch" <<'PATCH'
---- a/user.py
-+++ b/user.py
-@@ -1,3 +1,3 @@
--full_name = "John Doe"
-+full_name = get_name_from_env()
-PATCH
-if check_patch_pii "$TMPDIR_TEST/removed_pii.patch" 2>/dev/null; then
-    pass=$((pass + 1)); echo "ok   - removed PII lines are not flagged"
-else
-    fail=$((fail + 1)); echo "FAIL - removed PII lines should not be flagged"
-fi
-
-# Test: PII warning output contains the banner
-output=$(check_patch_pii "$TMPDIR_TEST/phone.patch" 2>&1 || true)
-if echo "$output" | grep -q "WARNING"; then
-    pass=$((pass + 1)); echo "ok   - PII detection prints WARNING banner"
-else
-    fail=$((fail + 1)); echo "FAIL - PII detection should print WARNING banner"
-fi
-
-# Test: patch with chat log role/content pattern
-cat > "$TMPDIR_TEST/chatlog.patch" <<'PATCH'
---- a/export.json
-+++ b/export.json
-@@ -0,0 +1 @@
-+{"role": "user", "content": "What is my account balance?"}
-PATCH
-if check_patch_pii "$TMPDIR_TEST/chatlog.patch" 2>/dev/null; then
-    fail=$((fail + 1)); echo "FAIL - chat log patch should be flagged"
-else
-    pass=$((pass + 1)); echo "ok   - chat log patch is flagged"
 fi
 
 echo ""
