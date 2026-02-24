@@ -373,31 +373,31 @@ When finished: every remaining patch in $queue_dir must pass git am --check AND 
       exit 1
     fi
 
-    # Step 2: Apply patches for real (in bash, not using the agent)
+    # Step 2: Apply patches in chronological order (by filename timestamp)
     echo "Applying patches..."
     applied_repos=()
-    for repo_dir in "$queue_dir"/*/; do
-      [[ -d "$repo_dir" ]] || continue
+    while IFS= read -r patch_file; do
+      repo_dir=$(dirname "$patch_file")
       repo=$(basename "$repo_dir")
       target="$repos_dir/$repo"
       if [[ ! -d "$target/.git" ]]; then
         echo "Warning: $target is not a git repo, skipping." >&2
         continue
       fi
-      for patch_file in "$repo_dir"*.patch; do
-        [[ -f "$patch_file" ]] || continue
-        echo "  Applying $(basename "$patch_file") to $repo..."
-        (cd "$target" && git am "$patch_file") || {
-          echo "FAILED to apply $(basename "$patch_file") to $repo. Aborting." >&2
-          (cd "$target" && git am --abort 2>/dev/null || true)
-          exit 1
-        }
-        rm "$patch_file"
-      done
-      applied_repos+=("$repo")
+      echo "  Applying $(basename "$patch_file") to $repo..."
+      (cd "$target" && git am "$patch_file") || {
+        echo "FAILED to apply $(basename "$patch_file") to $repo. Aborting." >&2
+        (cd "$target" && git am --abort 2>/dev/null || true)
+        exit 1
+      }
+      rm "$patch_file"
+      case " ${applied_repos[*]:-} " in
+        *" $repo "*) ;;
+        *) applied_repos+=("$repo") ;;
+      esac
       # Clean up empty merge-queue repo directory
       rmdir "$repo_dir" 2>/dev/null && echo "  Cleaned up empty $queue_dir/$repo/"
-    done
+    done < <(find "$queue_dir" -name '*.patch' -type f | while IFS= read -r f; do echo "$(basename "$f") $f"; done | sort | cut -d' ' -f2-)
     echo "All patches applied."
 
     # Step 3: Push if --push was given
