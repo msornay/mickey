@@ -419,9 +419,11 @@ case "$cmd" in
 
     # Step 1: Launch agent to verify and fix all patches
     echo "Verifying $patch_count patch(es)..."
-    verify_prompt="Your goal: ensure every .patch file in $queue_dir applies cleanly. Do NOT stop until all patches pass.
+    verify_prompt="Your goal: ensure every .patch file in $queue_dir applies cleanly AND contains no personal information. Do NOT stop until all patches pass both checks.
 
 For each subdirectory in $queue_dir/, the directory name is a repo name.
+
+## Part 1: Patch application
 
 For each repo:
   1. Clone or update: cd ~/work/<repo> (clone from $repos_dir/<repo> if needed, or git checkout main && git pull)
@@ -434,7 +436,49 @@ For each repo:
      - Repeat until it applies cleanly
   4. If a patch is truly unfixable (e.g. the entire feature was already landed), delete it from $queue_dir
 
-When finished, every remaining patch in $queue_dir must pass git am --check. Do a final pass to confirm."
+## Part 2: Personal information scan
+
+After all patches apply cleanly, review each patch for personal information leaks.
+
+**IMPORTANT**: Go beyond simple pattern matching. Use semantic understanding to identify PII that regular expressions would miss. Read the full diff content (added lines) of every patch, understand the context, and flag any of the following:
+
+### Direct identifiers
+- **Real names** of people (in comments, test data, variable values, commit messages beyond the author line)
+- **Real email addresses** that appear to belong to actual people (not placeholder/test addresses like user@example.com)
+- **Phone numbers** in any format (international, local, with/without separators)
+- **Physical addresses** (street addresses, postal codes tied to specific locations)
+- **Government IDs** (SSN, national ID numbers, passport numbers, tax IDs)
+- **Usernames, account IDs, or session tokens** that could identify real users
+
+### Sensitive personal data
+- **Dates of birth** or ages tied to identifiable individuals
+- **Financial information** (bank account numbers, credit card numbers, salary figures tied to individuals)
+- **Health or biometric data** tied to identifiable individuals
+- **Conversation logs or chat transcripts** containing real user messages
+
+### Contextual PII (requires semantic understanding, not just regex)
+- **Internal hostnames, server names, or IP addresses** that reveal infrastructure details
+- **File paths containing real usernames** (e.g., /Users/jsmith/ or /home/jdoe/) — even when embedded in error messages, stack traces, or config values
+- **Organizational details** that could identify individuals (specific team names, office locations, employee IDs, internal project codenames)
+- **Behavioral data** (browsing history, search queries, purchase history, location check-ins) tied to identifiable people
+- **Composite identification** — combinations of seemingly innocuous data that together identify a person (e.g., job title + city + employer, or age + profession + neighborhood)
+- **Screenshots, logs, or debug output** that incidentally contain real user data
+- **Hardcoded personal data** in test fixtures, seed files, or example configs that looks like it belongs to a real person rather than being clearly fictional
+- **Copy-pasted terminal output** containing prompts with usernames, paths, or environment variables that reveal identity
+
+### How to evaluate
+Use your judgment and contextual reasoning — not just pattern matching. Ask yourself:
+- Does this data point look like it belongs to a real person, or is it clearly synthetic/fictional?
+- Could combining multiple data points in this patch identify someone?
+- Is this an internal detail (hostname, path, project name) that was accidentally included?
+
+Obviously fictional data (John Doe, 123 Fake Street, 555-0100) is fine. Data that looks like it could belong to a real person is not. When in doubt, flag it.
+
+If you find PII in a patch:
+  1. Print a clear warning identifying the patch file and the problematic content
+  2. DELETE the patch from $queue_dir (do not attempt to fix it — the agent should redo it)
+
+When finished: every remaining patch in $queue_dir must pass git am --check AND be free of personal information. Do a final pass to confirm both."
 
     agent=$(docker sandbox ls | awk 'NR>1 {print $1; exit}')
     if [[ -z "$agent" ]]; then

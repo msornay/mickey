@@ -78,6 +78,14 @@ assert_exits 0 "am cleans up empty merge-queue dirs" grep -q 'rmdir' "$MICKEY"
 assert_exits 0 "am tracks applied repos for push" grep -q 'applied_repos' "$MICKEY"
 assert_exits 0 "am push uses applied_repos array" grep -q 'applied_repos\[@\]' "$MICKEY"
 
+# -- am: verify_prompt includes PII scanning --
+assert_exits 0 "am verify_prompt mentions personal information" grep -q 'personal information' "$MICKEY"
+assert_exits 0 "am verify_prompt includes PII categories" grep -q 'Real names' "$MICKEY"
+assert_exits 0 "am verify_prompt instructs to delete PII patches" grep -q 'DELETE the patch' "$MICKEY"
+assert_exits 0 "am verify_prompt requires semantic understanding beyond regex" grep -q 'semantic understanding' "$MICKEY"
+assert_exits 0 "am verify_prompt includes contextual PII category" grep -q 'Contextual PII' "$MICKEY"
+assert_exits 0 "am verify_prompt checks for composite identification" grep -q 'Composite identification' "$MICKEY"
+
 # -- Agent output prefixing --
 assert_exits 0 "whip defines color palette array" grep -q 'colors=(' "$MICKEY"
 assert_exits 0 "whip pipes agent output through awk prefix" grep -q 'awk -v name=' "$MICKEY"
