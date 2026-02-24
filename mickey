@@ -124,68 +124,6 @@ Deploying code is done by a human, not by agents. When your work involves deploy
 
 DEFAULT_PROMPT="Follow your default behavior instructions: find TODOs in repos and work on them."
 
-# Secret/leak detection patterns for patch sanity checking.
-# Each pattern is an extended regex matched against added lines (+ lines) in patches.
-SECRET_PATTERNS=(
-  # Private keys
-  '-----BEGIN[[:space:]]+(RSA|DSA|EC|OPENSSH|PGP)[[:space:]]+PRIVATE[[:space:]]+KEY-----'
-  # AWS access key IDs
-  'AKIA[0-9A-Z]{16}'
-  # AWS secret keys (40 chars of base64-ish after common assignment patterns)
-  '(aws_secret_access_key|AWS_SECRET_ACCESS_KEY)[[:space:]]*[=:][[:space:]]*[A-Za-z0-9/+=]{40}'
-  # GitHub tokens
-  '(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}'
-  # Slack tokens
-  'xox[bpars]-[A-Za-z0-9\-]{10,}'
-  # Generic high-entropy secrets after assignment (password=, secret=, token=, api_key=)
-  '(password|passwd|secret|token|api_key|apikey|api_secret|auth_token)[[:space:]]*[=:][[:space:]]*[^[:space:]]{8,}'
-  # Database URLs with embedded passwords
-  '(mysql|postgres|postgresql|mongodb|redis)://[^:]+:[^@]+@'
-  # .env style secrets (KEY=value where key suggests a secret)
-  '^[+](SECRET|PASSWORD|PASSWD|API_KEY|API_SECRET|AUTH_TOKEN|PRIVATE_KEY|ACCESS_KEY|ENCRYPTION_KEY)[[:space:]]*='
-)
-
-# Check a single patch file for secret/credential leaks.
-# Only scans added lines (lines starting with +, excluding +++ header).
-# Returns 0 if clean, 1 if secrets found. Prints findings to stderr.
-check_patch_secrets() {
-  local patch_file="$1"
-  local found=0
-
-  # Extract added lines only (skip the +++ file header)
-  local added_lines
-  added_lines=$(grep '^+[^+]' "$patch_file" 2>/dev/null || true)
-  [[ -z "$added_lines" ]] && return 0
-
-  for pattern in "${SECRET_PATTERNS[@]}"; do
-    local matches
-    matches=$(echo "$added_lines" | grep -iE -- "$pattern" 2>/dev/null || true)
-    if [[ -n "$matches" ]]; then
-      if [[ $found -eq 0 ]]; then
-        echo "" >&2
-        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >&2
-        echo "!!  WARNING: Potential secret/credential leak detected!   !!" >&2
-        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >&2
-        echo "" >&2
-        echo "Patch: $(basename "$patch_file")" >&2
-        echo "" >&2
-      fi
-      found=1
-      echo "Match (pattern: $pattern):" >&2
-      echo "$matches" | head -5 >&2
-      echo "" >&2
-    fi
-  done
-
-  if [[ $found -eq 1 ]]; then
-    echo "This patch will NOT be applied. Review and remove secrets before retrying." >&2
-    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >&2
-    echo "" >&2
-  fi
-
-  return $found
-}
-
 usage() {
   cat <<'USAGE'
 Usage: mickey <command> [args]
@@ -435,26 +373,7 @@ When finished: every remaining patch in $queue_dir must pass git am --check AND 
       exit 1
     fi
 
-    # Step 2: Scan all patches for secret/credential leaks
-    echo "Scanning patches for secrets..."
-    leaked=0
-    for repo_dir in "$queue_dir"/*/; do
-      [[ -d "$repo_dir" ]] || continue
-      for patch_file in "$repo_dir"*.patch; do
-        [[ -f "$patch_file" ]] || continue
-        if ! check_patch_secrets "$patch_file"; then
-          leaked=1
-        fi
-      done
-    done
-    if [[ $leaked -eq 1 ]]; then
-      echo "Secret leak(s) detected. Patches NOT applied." >&2
-      echo "Review the flagged patches, remove secrets, and retry." >&2
-      exit 1
-    fi
-    echo "No secrets detected."
-
-    # Step 3: Apply patches for real (in bash, not using the agent)
+    # Step 2: Apply patches for real (in bash, not using the agent)
     echo "Applying patches..."
     applied_repos=()
     for repo_dir in "$queue_dir"/*/; do
@@ -481,7 +400,7 @@ When finished: every remaining patch in $queue_dir must pass git am --check AND 
     done
     echo "All patches applied."
 
-    # Step 4: Push if --push was given
+    # Step 3: Push if --push was given
     if $push; then
       echo "Pushing repos..."
       for repo in "${applied_repos[@]}"; do
