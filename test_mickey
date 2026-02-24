@@ -77,6 +77,129 @@ assert_output_matches "whip" "usage mentions whip command" "$MICKEY"
 assert_output_matches "am" "usage mentions am command" "$MICKEY"
 assert_output_matches "wip/" "usage mentions wip directory" "$MICKEY"
 
+# -- Secret detection structure --
+assert_exits 0 "SECRET_PATTERNS array is defined" grep -q "^SECRET_PATTERNS=" "$MICKEY"
+assert_exits 0 "check_patch_secrets function is defined" grep -q "^check_patch_secrets()" "$MICKEY"
+assert_exits 0 "am command calls check_patch_secrets" grep -q "check_patch_secrets" "$MICKEY"
+assert_exits 0 "secret scan prints warning banner" grep -q "WARNING.*secret\|WARNING.*credential\|WARNING.*leak" "$MICKEY"
+
+# -- Secret detection functional tests --
+# Source just the patterns and function from mickey (skip the main case/esac)
+TMPDIR_TEST=$(mktemp -d)
+trap 'rm -rf "$TMPDIR_TEST"' EXIT
+
+# Extract the SECRET_PATTERNS and check_patch_secrets function
+eval "$(sed -n '/^SECRET_PATTERNS=/,/^)/p' "$MICKEY")"
+eval "$(sed -n '/^check_patch_secrets()/,/^}/p' "$MICKEY")"
+
+# Test: clean patch (no secrets)
+cat > "$TMPDIR_TEST/clean.patch" <<'PATCH'
+--- a/hello.py
++++ b/hello.py
+@@ -1,3 +1,4 @@
++import os
+ def hello():
+     print("hello world")
+PATCH
+if check_patch_secrets "$TMPDIR_TEST/clean.patch" 2>/dev/null; then
+    pass=$((pass + 1)); echo "ok   - clean patch passes secret check"
+else
+    fail=$((fail + 1)); echo "FAIL - clean patch should pass secret check"
+fi
+
+# Test: patch with AWS key
+cat > "$TMPDIR_TEST/aws.patch" <<'PATCH'
+--- a/config.py
++++ b/config.py
+@@ -1,3 +1,4 @@
++AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+ def connect():
+     pass
+PATCH
+if check_patch_secrets "$TMPDIR_TEST/aws.patch" 2>/dev/null; then
+    fail=$((fail + 1)); echo "FAIL - AWS key patch should be flagged"
+else
+    pass=$((pass + 1)); echo "ok   - AWS key patch is flagged"
+fi
+
+# Test: patch with private key
+cat > "$TMPDIR_TEST/privkey.patch" <<'PATCH'
+--- a/keys.txt
++++ b/keys.txt
+@@ -0,0 +1,3 @@
++-----BEGIN RSA PRIVATE KEY-----
++MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWelFh
++-----END RSA PRIVATE KEY-----
+PATCH
+if check_patch_secrets "$TMPDIR_TEST/privkey.patch" 2>/dev/null; then
+    fail=$((fail + 1)); echo "FAIL - private key patch should be flagged"
+else
+    pass=$((pass + 1)); echo "ok   - private key patch is flagged"
+fi
+
+# Test: patch with GitHub token
+cat > "$TMPDIR_TEST/ghtoken.patch" <<'PATCH'
+--- a/.env
++++ b/.env
+@@ -0,0 +1 @@
++GITHUB_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij
+PATCH
+if check_patch_secrets "$TMPDIR_TEST/ghtoken.patch" 2>/dev/null; then
+    fail=$((fail + 1)); echo "FAIL - GitHub token patch should be flagged"
+else
+    pass=$((pass + 1)); echo "ok   - GitHub token patch is flagged"
+fi
+
+# Test: patch with database URL containing password
+cat > "$TMPDIR_TEST/dburl.patch" <<'PATCH'
+--- a/config.yml
++++ b/config.yml
+@@ -0,0 +1 @@
++database_url: postgres://admin:s3cretP4ss@db.example.com:5432/myapp
+PATCH
+if check_patch_secrets "$TMPDIR_TEST/dburl.patch" 2>/dev/null; then
+    fail=$((fail + 1)); echo "FAIL - database URL patch should be flagged"
+else
+    pass=$((pass + 1)); echo "ok   - database URL with password is flagged"
+fi
+
+# Test: patch with password assignment
+cat > "$TMPDIR_TEST/passwd.patch" <<'PATCH'
+--- a/settings.py
++++ b/settings.py
+@@ -0,0 +1 @@
++password = "hunter2isMyP4ssword"
+PATCH
+if check_patch_secrets "$TMPDIR_TEST/passwd.patch" 2>/dev/null; then
+    fail=$((fail + 1)); echo "FAIL - password assignment patch should be flagged"
+else
+    pass=$((pass + 1)); echo "ok   - password assignment patch is flagged"
+fi
+
+# Test: removed secrets (- lines) should NOT be flagged
+cat > "$TMPDIR_TEST/removed.patch" <<'PATCH'
+--- a/config.py
++++ b/config.py
+@@ -1,3 +1,3 @@
+-AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
++AWS_KEY = os.environ["AWS_KEY"]
+ def connect():
+     pass
+PATCH
+if check_patch_secrets "$TMPDIR_TEST/removed.patch" 2>/dev/null; then
+    pass=$((pass + 1)); echo "ok   - removed secret lines are not flagged"
+else
+    fail=$((fail + 1)); echo "FAIL - removed secret lines should not be flagged"
+fi
+
+# Test: warning output contains the banner
+output=$(check_patch_secrets "$TMPDIR_TEST/aws.patch" 2>&1 || true)
+if echo "$output" | grep -q "WARNING"; then
+    pass=$((pass + 1)); echo "ok   - secret detection prints WARNING banner"
+else
+    fail=$((fail + 1)); echo "FAIL - secret detection should print WARNING banner"
+fi
+
 echo ""
 echo "$((pass + fail)) tests, $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
