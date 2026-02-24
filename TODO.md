@@ -8,3 +8,5 @@
 - Implicit TODO in all repo: well-organized, KISS, just the right amount of
   documentation. Simple E2E sanity tests commited and green
 - If possible, some inside on stdout about what agents are doing
+- Also look for TODO.md at the root of the workspace ($WORKSPACE_DIR/TODO.md),
+  not just inside individual repos
