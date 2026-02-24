@@ -123,6 +123,7 @@ Deploying code is done by a human, not by agents. When your work involves deploy
 - Select TODOs at random — do not always pick the same one'
 
 DEFAULT_PROMPT="Follow your default behavior instructions: find TODOs in repos and work on them."
+DIFFICULT_TASK_PROMPT="Look at all repos in \$WORKSPACE_DIR/repos/ and the workspace TODO.md. Identify the most difficult, highest-impact task you can find — something that requires real engineering effort, not just boilerplate. This could be a complex bug fix, a missing feature that multiple things depend on, a significant refactor, or a hard TODO that other agents would skip. Solve it with working code and tests. Do NOT create more TODOs — write the actual implementation. Follow the standard workflow: claim via wip/, work on a branch, run make test, produce a patch."
 
 usage() {
   cat <<'USAGE'
@@ -239,6 +240,8 @@ case "$cmd" in
 
       if [[ $i -lt ${#prompts[@]} ]] && [[ -n "${prompts[$i]}" ]]; then
         agent_prompt="${prompts[$i]}"
+      elif [[ $((RANDOM % 2)) -eq 0 ]]; then
+        agent_prompt="$DIFFICULT_TASK_PROMPT"
       else
         agent_prompt="$DEFAULT_PROMPT"
       fi
