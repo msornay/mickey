@@ -379,6 +379,7 @@ When finished: every remaining patch in $queue_dir must pass git am --check AND 
     # Step 2: Apply patches in chronological order (by filename timestamp)
     echo "Applying patches..."
     applied_repos=()
+    applied_summaries=()
     while IFS= read -r patch_file; do
       repo_dir=$(dirname "$patch_file")
       repo=$(basename "$repo_dir")
@@ -387,12 +388,14 @@ When finished: every remaining patch in $queue_dir must pass git am --check AND 
         echo "Warning: $target is not a git repo, skipping." >&2
         continue
       fi
+      subject=$(head -10 "$patch_file" | grep '^Subject:' | sed 's/^Subject: \[PATCH[^]]*\] //')
       echo "  Applying $(basename "$patch_file") to $repo..."
       (cd "$target" && git am "$patch_file") || {
         echo "FAILED to apply $(basename "$patch_file") to $repo. Aborting." >&2
         (cd "$target" && git am --abort 2>/dev/null || true)
         exit 1
       }
+      applied_summaries+=("$repo: $subject")
       rm "$patch_file"
       case " ${applied_repos[*]:-} " in
         *" $repo "*) ;;
@@ -403,7 +406,34 @@ When finished: every remaining patch in $queue_dir must pass git am --check AND 
     done < <(find "$queue_dir" -name '*.patch' -type f | while IFS= read -r f; do echo "$(basename "$f") $f"; done | sort | cut -d' ' -f2-)
     echo "All patches applied."
 
-    # Step 3: Push if --push was given
+    # Step 3: Update workspace TODO.md if patches addressed any items
+    todo_file="$ws/TODO.md"
+    if [[ -f "$todo_file" ]] && [[ ${#applied_summaries[@]} -gt 0 ]]; then
+      summary_list=""
+      for s in "${applied_summaries[@]}"; do
+        summary_list+="- $s"$'\n'
+      done
+
+      update_prompt="Your task: Update the workspace-wide TODO file at $todo_file to remove items addressed by recently applied patches.
+
+These patches were just applied:
+${summary_list}
+Read $todo_file. For each item, decide whether one of the applied patches clearly addresses it. If so, remove that item. If in doubt, keep it.
+
+Rules:
+- Only remove items clearly addressed by the patches above.
+- Do NOT add new items or rewrite existing ones.
+- Do NOT change formatting or structure beyond removing addressed lines.
+- Remove blank lines left behind when items are removed (keep the file tidy).
+- If no items are addressed, do nothing and say so."
+
+      echo "Updating workspace TODO.md..."
+      ANTHROPIC_MODEL="claude-haiku-4-5-20251001" docker sandbox run "$agent" -- \
+        --append-system-prompt "$AGENT_RULES" -p "$update_prompt" || \
+        echo "Warning: TODO.md update agent failed (non-fatal)." >&2
+    fi
+
+    # Step 4: Push if --push was given
     if $push; then
       echo "Pushing repos..."
       for repo in "${applied_repos[@]}"; do

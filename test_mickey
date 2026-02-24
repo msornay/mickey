@@ -78,6 +78,12 @@ assert_exits 0 "am cleans up empty merge-queue dirs" grep -q 'rmdir' "$MICKEY"
 assert_exits 0 "am tracks applied repos for push" grep -q 'applied_repos' "$MICKEY"
 assert_exits 0 "am push uses applied_repos array" grep -q 'applied_repos\[@\]' "$MICKEY"
 
+# -- am: TODO.md update after applying patches --
+assert_exits 0 "am collects patch summaries" grep -q 'applied_summaries' "$MICKEY"
+assert_exits 0 "am checks for TODO.md before updating" grep -q 'todo_file.*TODO.md' "$MICKEY"
+assert_exits 0 "am update prompt instructs to remove addressed items" grep -q 'remove items addressed' "$MICKEY"
+assert_exits 0 "am TODO.md update is non-fatal on failure" grep -q 'non-fatal' "$MICKEY"
+
 # -- am: verify_prompt includes PII scanning --
 assert_exits 0 "am verify_prompt mentions personal information" grep -q 'personal information' "$MICKEY"
 assert_exits 0 "am verify_prompt includes PII categories" grep -q 'Real names' "$MICKEY"
