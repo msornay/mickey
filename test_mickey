@@ -76,6 +76,11 @@ assert_exits 0 "no patch/ directory references in agent rules" bash -c "! grep -
 # -- am: merge-queue cleanup --
 assert_exits 0 "am cleans up empty merge-queue dirs" grep -q 'rmdir' "$MICKEY"
 
+# -- Agent output prefixing --
+assert_exits 0 "whip defines color palette array" grep -q 'colors=(' "$MICKEY"
+assert_exits 0 "whip pipes agent output through awk prefix" grep -q 'awk -v name=' "$MICKEY"
+assert_exits 0 "awk uses fflush for unbuffered output" grep -q 'fflush()' "$MICKEY"
+
 # -- Usage text --
 assert_output_matches "whip" "usage mentions whip command" "$MICKEY"
 assert_output_matches "am" "usage mentions am command" "$MICKEY"

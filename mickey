@@ -247,6 +247,9 @@ case "$cmd" in
       selected=("${all_names[@]}")
     fi
 
+    # Color palette for distinguishing agents (ANSI color codes)
+    colors=(36 32 33 35 34 31)  # cyan, green, yellow, magenta, blue, red
+
     stop_all() {
       kill 0
       for n in "${selected[@]}"; do docker sandbox stop "$n" 2>/dev/null & done
@@ -256,6 +259,7 @@ case "$cmd" in
 
     for i in "${!selected[@]}"; do
       name="${selected[$i]}"
+      color="${colors[$((i % ${#colors[@]}))]}"
 
       if [[ $i -lt ${#prompts[@]} ]] && [[ -n "${prompts[$i]}" ]]; then
         agent_prompt="${prompts[$i]}"
@@ -283,7 +287,8 @@ case "$cmd" in
             wait $!
           fi
         done
-      ) &
+      ) 2>&1 | awk -v name="$name" -v color="$color" \
+        '{printf "\033[" color "m[" name "]\033[0m %s\n", $0; fflush()}' &
     done
     wait
     ;;
