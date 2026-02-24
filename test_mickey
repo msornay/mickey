@@ -69,6 +69,7 @@ assert_exits 0 "agent rules contain producing output" grep -q "Producing output"
 assert_exits 0 "agent rules contain sanity test requirement" grep -q "make test" "$MICKEY"
 assert_exits 0 "agent rules contain wip directory" grep -q 'wip/' "$MICKEY"
 assert_exits 0 "agent rules contain deployment awareness" grep -q "Deployment awareness" "$MICKEY"
+assert_exits 0 "agent rules mention workspace-level TODO.md" grep -q 'WORKSPACE_DIR/TODO.md' "$MICKEY"
 assert_exits 0 "agent rules do NOT contain review process" bash -c "! grep -q 'Reviewing patches' '$MICKEY'"
 assert_exits 0 "no patch/ directory references in agent rules" bash -c "! grep -q 'WORKSPACE_DIR/patch/' '$MICKEY'"
 

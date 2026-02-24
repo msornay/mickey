@@ -23,25 +23,26 @@ If you are given no specific task (empty or missing instructions), pick up usefu
    grep -rn '\''TODO\|FIXME\|HACK\|XXX'\'' $WORKSPACE_DIR/repos/
    ```
 2. Also check for a `TODO.md` or `TODO` file in each repo root.
-3. Also check for **implicit TODOs**: repos that do not follow standard conventions. Every repo should have a Makefile with at least these targets: `test` (sanity tests), `deploy` (deployment automation). If a repo is missing these, creating them is an implicit TODO.
-4. **Check existing patches.** Read patch files in `$WORKSPACE_DIR/merge-queue/<repo>/` and examine their commit messages (the `Subject:` line). Skip TODOs already addressed by an existing patch.
-5. **Check for in-progress work.** Read all `.wip` files in `$WORKSPACE_DIR/wip/`. Each is a short message from another agent describing what they'\''re working on. Skip any TODO that overlaps with an existing wip message (same repo and similar intent, even if worded differently).
-6. **Skip TODOs that have unmet prerequisites.** If a TODO depends on other TODOs being completed first (e.g., it references another task, needs infrastructure that doesn'\''t exist yet, or is sequenced after other items in TODO.md), skip it. Only pick TODOs whose prerequisites are already done or that have no dependencies.
-7. Collect all actionable TODOs into a list and **select one at random**. Do NOT always pick the first or "most important" one — randomize to reduce collision with other agents.
-8. **Wait a random delay between 0 and 30 seconds** to stagger agent starts:
+3. Also check for a `TODO.md` at the workspace root (`$WORKSPACE_DIR/TODO.md`). Workspace-level TODOs may reference specific repos — treat them the same as repo-level TODOs.
+4. Also check for **implicit TODOs**: repos that do not follow standard conventions. Every repo should have a Makefile with at least these targets: `test` (sanity tests), `deploy` (deployment automation). If a repo is missing these, creating them is an implicit TODO.
+5. **Check existing patches.** Read patch files in `$WORKSPACE_DIR/merge-queue/<repo>/` and examine their commit messages (the `Subject:` line). Skip TODOs already addressed by an existing patch.
+6. **Check for in-progress work.** Read all `.wip` files in `$WORKSPACE_DIR/wip/`. Each is a short message from another agent describing what they'\''re working on. Skip any TODO that overlaps with an existing wip message (same repo and similar intent, even if worded differently).
+7. **Skip TODOs that have unmet prerequisites.** If a TODO depends on other TODOs being completed first (e.g., it references another task, needs infrastructure that doesn'\''t exist yet, or is sequenced after other items in TODO.md), skip it. Only pick TODOs whose prerequisites are already done or that have no dependencies.
+8. Collect all actionable TODOs into a list and **select one at random**. Do NOT always pick the first or "most important" one — randomize to reduce collision with other agents.
+9. **Wait a random delay between 0 and 30 seconds** to stagger agent starts:
    ```
    sleep $((RANDOM % 30))
    ```
-9. **Re-read wip/** after the delay — another agent may have claimed the same TODO while you waited. If your chosen TODO now overlaps with a new wip message, pick a different one.
-10. Claim the TODO by posting a `.wip` file describing your intent:
+10. **Re-read wip/** after the delay — another agent may have claimed the same TODO while you waited. If your chosen TODO now overlaps with a new wip message, pick a different one.
+11. Claim the TODO by posting a `.wip` file describing your intent:
    ```
    cat > $WORKSPACE_DIR/wip/$(date +%Y%m%d-%H%M%S)-$(hostname).wip <<WIP
    repo: <repo>
    task: <one-line description of what you are about to do>
    WIP
    ```
-11. Work on it using the normal "Starting work" and "Producing output" process.
-12. In your commit message, reference the original TODO (file and line number) so it can be traced back.
+12. Work on it using the normal "Starting work" and "Producing output" process.
+13. In your commit message, reference the original TODO (file and line number) so it can be traced back.
 
 ### If there is nothing to do
 
