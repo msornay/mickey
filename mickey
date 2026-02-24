@@ -453,6 +453,7 @@ When finished, every remaining patch in $queue_dir must pass git am --check. Do 
 
     # Step 3: Apply patches for real (in bash, not using the agent)
     echo "Applying patches..."
+    applied_repos=()
     for repo_dir in "$queue_dir"/*/; do
       [[ -d "$repo_dir" ]] || continue
       repo=$(basename "$repo_dir")
@@ -471,19 +472,17 @@ When finished, every remaining patch in $queue_dir must pass git am --check. Do 
         }
         rm "$patch_file"
       done
+      applied_repos+=("$repo")
       # Clean up empty merge-queue repo directory
       rmdir "$repo_dir" 2>/dev/null && echo "  Cleaned up empty $queue_dir/$repo/"
     done
     echo "All patches applied."
 
-    # Step 5: Push if --push was given
+    # Step 4: Push if --push was given
     if $push; then
       echo "Pushing repos..."
-      for repo_dir in "$queue_dir"/*/; do
-        [[ -d "$repo_dir" ]] || continue
-        repo=$(basename "$repo_dir")
+      for repo in "${applied_repos[@]}"; do
         target="$repos_dir/$repo"
-        [[ -d "$target/.git" ]] || continue
         echo "  Pushing $repo main..."
         (cd "$target" && git push origin main) || {
           echo "FAILED to push $repo." >&2

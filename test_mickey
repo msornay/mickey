@@ -73,8 +73,10 @@ assert_exits 0 "agent rules mention workspace-level TODO.md" grep -q 'WORKSPACE_
 assert_exits 0 "agent rules do NOT contain review process" bash -c "! grep -q 'Reviewing patches' '$MICKEY'"
 assert_exits 0 "no patch/ directory references in agent rules" bash -c "! grep -q 'WORKSPACE_DIR/patch/' '$MICKEY'"
 
-# -- am: merge-queue cleanup --
+# -- am: merge-queue cleanup and push --
 assert_exits 0 "am cleans up empty merge-queue dirs" grep -q 'rmdir' "$MICKEY"
+assert_exits 0 "am tracks applied repos for push" grep -q 'applied_repos' "$MICKEY"
+assert_exits 0 "am push uses applied_repos array" grep -q 'applied_repos\[@\]' "$MICKEY"
 
 # -- Agent output prefixing --
 assert_exits 0 "whip defines color palette array" grep -q 'colors=(' "$MICKEY"
