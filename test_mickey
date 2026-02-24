@@ -86,7 +86,18 @@ assert_exits 0 "awk uses fflush for unbuffered output" grep -q 'fflush()' "$MICK
 # -- Usage text --
 assert_output_matches "whip" "usage mentions whip command" "$MICKEY"
 assert_output_matches "am" "usage mentions am command" "$MICKEY"
+assert_output_matches "status" "usage mentions status command" "$MICKEY"
 assert_output_matches "wip/" "usage mentions wip directory" "$MICKEY"
+
+# -- Status command structure --
+assert_exits 0 "status command is handled in case statement" grep -q "status)" "$MICKEY"
+assert_exits 0 "status shows Work In Progress section" grep -q "Work In Progress" "$MICKEY"
+assert_exits 0 "status shows Merge Queue section" grep -q "Merge Queue" "$MICKEY"
+
+# -- Whip activity watcher --
+assert_exits 0 "whip has activity watcher background loop" grep -q "activity watcher" "$MICKEY"
+assert_exits 0 "watcher reports claimed TODOs" grep -q "CLAIMED" "$MICKEY"
+assert_exits 0 "watcher reports submitted patches" grep -q ">>> PATCH" "$MICKEY"
 
 # -- Secret detection structure --
 assert_exits 0 "SECRET_PATTERNS array is defined" grep -q "^SECRET_PATTERNS=" "$MICKEY"

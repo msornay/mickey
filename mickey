@@ -257,6 +257,7 @@ Commands:
   ls                                         List agents
   fire  <name>                               Remove agent
   am    [--push]                             Verify and apply patches from merge-queue/
+  status                                     Show wip claims, queued patches, and agents
   lock                                       Make repos/ read-only
   unlock                                     Restore repos/ write permissions
   reset                                      Clear wip/ and merge-queue/ (with confirmation)
@@ -310,12 +311,49 @@ case "$cmd" in
     # Color palette for distinguishing agents (ANSI color codes)
     colors=(36 32 33 35 34 31)  # cyan, green, yellow, magenta, blue, red
 
+    ws="${WORKSPACE_DIR:-$HOME/src}"
+    wip_dir="$ws/wip"
+    queue_dir="$ws/merge-queue"
+
     stop_all() {
       kill 0
       for n in "${selected[@]}"; do docker sandbox stop "$n" 2>/dev/null & done
       wait
     }
     trap 'stop_all; exit 0' INT TERM EXIT
+
+    # Background activity watcher: prints when agents claim TODOs or submit patches
+    (
+      prev_wip=$(ls "$wip_dir"/*.wip 2>/dev/null | sort || true)
+      prev_patches=$(find "$queue_dir" -name '*.patch' -type f 2>/dev/null | sort || true)
+      while true; do
+        sleep 10
+        cur_wip=$(ls "$wip_dir"/*.wip 2>/dev/null | sort || true)
+        if [[ "$cur_wip" != "$prev_wip" ]]; then
+          # Find new wip files
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            echo ">>> CLAIMED: $(cat "$f")"
+          done < <(comm -13 <(echo "$prev_wip") <(echo "$cur_wip"))
+          # Report cleared wip files
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            echo ">>> DONE: $(basename "$f" .wip)"
+          done < <(comm -23 <(echo "$prev_wip") <(echo "$cur_wip"))
+          prev_wip="$cur_wip"
+        fi
+        cur_patches=$(find "$queue_dir" -name '*.patch' -type f 2>/dev/null | sort || true)
+        if [[ "$cur_patches" != "$prev_patches" ]]; then
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            repo=$(basename "$(dirname "$f")")
+            subject=$(head -10 "$f" | grep '^Subject:' | sed 's/^Subject: \[PATCH[^]]*\] //')
+            echo ">>> PATCH: $repo — $subject"
+          done < <(comm -13 <(echo "$prev_patches") <(echo "$cur_patches"))
+          prev_patches="$cur_patches"
+        fi
+      done
+    ) &
 
     for i in "${!selected[@]}"; do
       name="${selected[$i]}"
@@ -491,6 +529,39 @@ When finished, every remaining patch in $queue_dir must pass git am --check. Do 
       done
       echo "All repos pushed."
     fi
+    ;;
+  status)
+    ws="${WORKSPACE_DIR:-$HOME/src}"
+    wip_dir="$ws/wip"
+    queue_dir="$ws/merge-queue"
+
+    echo "=== Agents ==="
+    docker sandbox ls 2>/dev/null || echo "  (docker not available)"
+    echo ""
+
+    echo "=== Work In Progress ==="
+    wip_found=0
+    for f in "$wip_dir"/*.wip; do
+      [[ -f "$f" ]] || continue
+      wip_found=1
+      echo "  $(cat "$f")"
+    done
+    [[ $wip_found -eq 0 ]] && echo "  (none)"
+    echo ""
+
+    echo "=== Merge Queue ==="
+    patch_found=0
+    for repo_dir in "$queue_dir"/*/; do
+      [[ -d "$repo_dir" ]] || continue
+      repo=$(basename "$repo_dir")
+      for patch_file in "$repo_dir"*.patch; do
+        [[ -f "$patch_file" ]] || continue
+        patch_found=1
+        subject=$(head -10 "$patch_file" | grep '^Subject:' | sed 's/^Subject: \[PATCH[^]]*\] //')
+        echo "  $repo: $subject"
+      done
+    done
+    [[ $patch_found -eq 0 ]] && echo "  (none)"
     ;;
   lock)
     repos_dir="${WORKSPACE_DIR:-$HOME/src}/repos"
