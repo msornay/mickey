@@ -72,6 +72,9 @@ assert_exits 0 "agent rules contain deployment awareness" grep -q "Deployment aw
 assert_exits 0 "agent rules do NOT contain review process" bash -c "! grep -q 'Reviewing patches' '$MICKEY'"
 assert_exits 0 "no patch/ directory references in agent rules" bash -c "! grep -q 'WORKSPACE_DIR/patch/' '$MICKEY'"
 
+# -- am: merge-queue cleanup --
+assert_exits 0 "am cleans up empty merge-queue dirs" grep -q 'rmdir' "$MICKEY"
+
 # -- Usage text --
 assert_output_matches "whip" "usage mentions whip command" "$MICKEY"
 assert_output_matches "am" "usage mentions am command" "$MICKEY"

@@ -386,6 +386,8 @@ When finished, every remaining patch in $queue_dir must pass git am --check. Do 
         }
         rm "$patch_file"
       done
+      # Clean up empty merge-queue repo directory
+      rmdir "$repo_dir" 2>/dev/null && echo "  Cleaned up empty $queue_dir/$repo/"
     done
     echo "All patches applied."
 
@@ -430,6 +432,7 @@ When finished, every remaining patch in $queue_dir must pass git am --check. Do 
     [[ "$answer" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
     find "$wip_dir" -type f ! -name '.DS_Store' -delete 2>/dev/null || true
     find "$queue_dir" -type f ! -name '.DS_Store' -delete 2>/dev/null || true
+    find "$queue_dir" -mindepth 1 -type d -empty -delete 2>/dev/null || true
     echo "Done."
     ;;
   *)
