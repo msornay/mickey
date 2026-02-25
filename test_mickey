@@ -92,11 +92,12 @@ assert_exits 0 "am verify_prompt requires semantic understanding beyond regex" g
 assert_exits 0 "am verify_prompt includes contextual PII category" grep -q 'Contextual PII' "$MICKEY"
 assert_exits 0 "am verify_prompt checks for composite identification" grep -q 'Composite identification' "$MICKEY"
 
-# -- Difficult task prompt --
-assert_exits 0 "DIFFICULT_TASK_PROMPT variable is defined" grep -q "^DIFFICULT_TASK_PROMPT=" "$MICKEY"
-assert_exits 0 "difficult prompt requires actual implementation" grep -q "Do NOT create more TODOs" "$MICKEY"
-assert_exits 0 "whip uses RANDOM to select prompt" grep -q 'RANDOM % 2' "$MICKEY"
-assert_exits 0 "whip references DIFFICULT_TASK_PROMPT" grep -q 'DIFFICULT_TASK_PROMPT' "$MICKEY"
+# -- Task selection model --
+assert_exits 0 "agent rules include coin flip for task source" grep -q 'RANDOM % 2' "$MICKEY"
+assert_exits 0 "agent rules describe workspace TODO path" grep -q 'workspace TODO' "$MICKEY"
+assert_exits 0 "agent rules describe random repo path" grep -q 'random repo' "$MICKEY"
+assert_exits 0 "agent rules allow exit without patch" grep -q 'exit cleanly without producing a patch' "$MICKEY"
+assert_exits 0 "no DIFFICULT_TASK_PROMPT variable" bash -c "! grep -q '^DIFFICULT_TASK_PROMPT=' '$MICKEY'"
 
 # -- Agent output prefixing --
 assert_exits 0 "whip defines color palette array" grep -q 'colors=(' "$MICKEY"

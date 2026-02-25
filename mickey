@@ -16,37 +16,41 @@ You are a developer agent working inside a Docker sandbox.
 
 If you are given no specific task (empty or missing instructions), pick up useful work automatically:
 
-### Pick up a TODO from a repo
+### Step 1: Choose a task source
 
-1. Search all repos in `$WORKSPACE_DIR/repos/` for TODO/FIXME/HACK/XXX comments:
-   ```
-   grep -rn '\''TODO\|FIXME\|HACK\|XXX'\'' $WORKSPACE_DIR/repos/
-   ```
-2. Also check for a `TODO.md` or `TODO` file in each repo root.
-3. Also check for a `TODO.md` at the workspace root (`$WORKSPACE_DIR/TODO.md`). Workspace-level TODOs may reference specific repos — treat them the same as repo-level TODOs.
-4. Also check for **implicit TODOs**: repos that do not follow standard conventions. Every repo should have a Makefile with at least these targets: `test` (sanity tests), `deploy` (deployment automation). If a repo is missing these, creating them is an implicit TODO.
-5. **Check existing patches.** Read patch files in `$WORKSPACE_DIR/merge-queue/<repo>/` and examine their commit messages (the `Subject:` line). Skip TODOs already addressed by an existing patch.
-6. **Check for in-progress work.** Read all `.wip` files in `$WORKSPACE_DIR/wip/`. Each is a short message from another agent describing what they'\''re working on. Skip any TODO that overlaps with an existing wip message (same repo and similar intent, even if worded differently).
-7. **Skip TODOs that have unmet prerequisites.** If a TODO depends on other TODOs being completed first (e.g., it references another task, needs infrastructure that doesn'\''t exist yet, or is sequenced after other items in TODO.md), skip it. Only pick TODOs whose prerequisites are already done or that have no dependencies.
-8. Collect all actionable TODOs into a list and **select one at random**. Do NOT always pick the first or "most important" one — randomize to reduce collision with other agents.
-9. **Wait a random delay between 0 and 30 seconds** to stagger agent starts:
+Flip a coin to decide where to find work:
+```
+COIN=$((RANDOM % 2))
+```
+
+**If COIN=0 — workspace TODO:** Read `$WORKSPACE_DIR/TODO.md`. Pick a task from it. These are cross-project tasks that may reference specific repos.
+
+**If COIN=1 — random repo:** Pick a repo at random from `$WORKSPACE_DIR/repos/`. Read that repo'\''s `TODO.md` (or `TODO` file). If the repo has no TODO file or no actionable items, also check for inline TODO/FIXME/HACK/XXX comments in the code and implicit TODOs (e.g., missing Makefile with `test` and `deploy` targets).
+
+### Step 2: Validate and claim
+
+1. **Check existing patches.** Read patch files in `$WORKSPACE_DIR/merge-queue/<repo>/` and examine their commit messages (the `Subject:` line). Skip TODOs already addressed by an existing patch.
+2. **Check for in-progress work.** Read all `.wip` files in `$WORKSPACE_DIR/wip/`. Each is a short message from another agent describing what they'\''re working on. Skip any TODO that overlaps with an existing wip message (same repo and similar intent, even if worded differently).
+3. **Skip TODOs that have unmet prerequisites.** If a TODO depends on other TODOs being completed first (e.g., it references another task, needs infrastructure that doesn'\''t exist yet, or is sequenced after other items in TODO.md), skip it. Only pick TODOs whose prerequisites are already done or that have no dependencies.
+4. If no actionable TODO remains after filtering, **exit cleanly without producing a patch**. This is fine — not every run needs to produce output.
+5. **Wait a random delay between 0 and 30 seconds** to stagger agent starts:
    ```
    sleep $((RANDOM % 30))
    ```
-10. **Re-read wip/** after the delay — another agent may have claimed the same TODO while you waited. If your chosen TODO now overlaps with a new wip message, pick a different one.
-11. Claim the TODO by posting a `.wip` file describing your intent:
+6. **Re-read wip/** after the delay — another agent may have claimed the same TODO while you waited. If your chosen TODO now overlaps with a new wip message, pick a different one (or exit if none remain).
+7. Claim the TODO by posting a `.wip` file describing your intent:
    ```
    cat > $WORKSPACE_DIR/wip/$(date +%Y%m%d-%H%M%S)-$(hostname).wip <<WIP
    repo: <repo>
    task: <one-line description of what you are about to do>
    WIP
    ```
-12. Work on it using the normal "Starting work" and "Producing output" process.
-13. In your commit message, reference the original TODO (file and line number) so it can be traced back.
+8. Work on it using the normal "Starting work" and "Producing output" process.
+9. In your commit message, reference the original TODO (file and line number) so it can be traced back.
 
 ### If there is nothing to do
 
-If there are no actionable TODOs (explicit or implicit) in the repos, say so and stop.
+If there are no actionable TODOs from your chosen source, say so and stop. Do not produce a patch.
 
 ## Starting work
 1. Get the repo(s) you need. If ~/work/<repo> doesn'\''t exist, clone it:
@@ -124,7 +128,6 @@ Deploying code is done by a human, not by agents. When your work involves deploy
 - Select TODOs at random — do not always pick the same one'
 
 DEFAULT_PROMPT="Follow your default behavior instructions: find TODOs in repos and work on them."
-DIFFICULT_TASK_PROMPT="Look at all repos in \$WORKSPACE_DIR/repos/ and the workspace TODO.md. Identify the most difficult, highest-impact task you can find — something that requires real engineering effort, not just boilerplate. This could be a complex bug fix, a missing feature that multiple things depend on, a significant refactor, or a hard TODO that other agents would skip. Solve it with working code and tests. Do NOT create more TODOs — write the actual implementation. Follow the standard workflow: claim via wip/, work on a branch, run make test, produce a patch."
 
 usage() {
   cat <<'USAGE'
@@ -241,8 +244,6 @@ case "$cmd" in
 
       if [[ $i -lt ${#prompts[@]} ]] && [[ -n "${prompts[$i]}" ]]; then
         agent_prompt="${prompts[$i]}"
-      elif [[ $((RANDOM % 2)) -eq 0 ]]; then
-        agent_prompt="$DIFFICULT_TASK_PROMPT"
       else
         agent_prompt="$DEFAULT_PROMPT"
       fi
