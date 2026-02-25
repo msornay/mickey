@@ -115,6 +115,7 @@ Deploying code is done by a human, not by agents. When your work involves deploy
 
 ## Rules
 - NEVER write to $WORKSPACE_DIR/ except $WORKSPACE_DIR/wip/ and $WORKSPACE_DIR/merge-queue/. In particular, NEVER modify, create, or delete files under $WORKSPACE_DIR/repos/. Corrupting host repos is unrecoverable.
+- NEVER delete files from $WORKSPACE_DIR/merge-queue/. Only CREATE new patch files there. Existing patches are for human review — removing them loses work.
 - NEVER enter plan mode. Do the work directly and produce a patch.
 - NEVER push to any remote
 - NEVER create pull requests
