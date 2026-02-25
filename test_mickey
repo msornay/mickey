@@ -119,6 +119,103 @@ assert_exits 0 "whip has activity watcher background loop" grep -q "activity wat
 assert_exits 0 "watcher reports claimed TODOs" grep -q "CLAIMED" "$MICKEY"
 assert_exits 0 "watcher reports submitted patches" grep -q ">>> PATCH" "$MICKEY"
 
+# ===== E2E tests (mock workspace, no Docker required) =====
+
+# Helpers to create/destroy a temporary workspace
+setup_workspace() {
+    TEST_WS=$(mktemp -d)
+    mkdir -p "$TEST_WS/wip" "$TEST_WS/merge-queue" "$TEST_WS/repos"
+    export WORKSPACE_DIR="$TEST_WS"
+}
+cleanup_workspace() {
+    chmod -R u+w "$TEST_WS" 2>/dev/null || true
+    rm -rf "$TEST_WS"
+    unset WORKSPACE_DIR
+}
+
+# -- status: empty workspace shows (none) --
+setup_workspace
+assert_output_matches "\\(none\\)" "status: empty workspace shows (none)" "$MICKEY" status
+cleanup_workspace
+
+# -- status: displays wip file content --
+setup_workspace
+cat > "$TEST_WS/wip/test.wip" <<WIP
+repo: testrepo
+task: test task description
+WIP
+assert_output_matches "test task description" "status: shows wip claim content" "$MICKEY" status
+cleanup_workspace
+
+# -- status: displays patch subjects from merge-queue --
+setup_workspace
+mkdir -p "$TEST_WS/merge-queue/testrepo"
+cat > "$TEST_WS/merge-queue/testrepo/20260101-000000-test.patch" <<PATCH
+From abc123 Mon Sep 17 00:00:00 2001
+From: test [bot] <test@agent.local>
+Date: Wed, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH] Add widget feature
+
+---
+PATCH
+assert_output_matches "Add widget feature" "status: shows patch subject from merge-queue" "$MICKEY" status
+cleanup_workspace
+
+# -- am: no patches exits 0 with message --
+setup_workspace
+assert_exits 0 "am: no patches exits 0" "$MICKEY" am
+assert_output_matches "No patches" "am: no patches shows message" "$MICKEY" am
+cleanup_workspace
+
+# -- reset: confirmed with y deletes files --
+setup_workspace
+touch "$TEST_WS/wip/test.wip"
+mkdir -p "$TEST_WS/merge-queue/repo"
+touch "$TEST_WS/merge-queue/repo/test.patch"
+echo "y" | "$MICKEY" reset >/dev/null 2>&1
+if [[ ! -f "$TEST_WS/wip/test.wip" ]] && [[ ! -f "$TEST_WS/merge-queue/repo/test.patch" ]]; then
+    pass=$((pass + 1)); echo "ok   - reset: y deletes wip and merge-queue files"
+else
+    fail=$((fail + 1)); echo "FAIL - reset: y deletes wip and merge-queue files"
+fi
+cleanup_workspace
+
+# -- reset: aborted with n keeps files --
+setup_workspace
+touch "$TEST_WS/wip/test.wip"
+echo "n" | "$MICKEY" reset >/dev/null 2>&1 || true
+if [[ -f "$TEST_WS/wip/test.wip" ]]; then
+    pass=$((pass + 1)); echo "ok   - reset: n keeps files intact"
+else
+    fail=$((fail + 1)); echo "FAIL - reset: n keeps files intact"
+fi
+cleanup_workspace
+
+# -- lock: makes repos/ read-only --
+setup_workspace
+mkdir -p "$TEST_WS/repos/testrepo"
+touch "$TEST_WS/repos/testrepo/file.txt"
+"$MICKEY" lock >/dev/null 2>&1
+if [[ ! -w "$TEST_WS/repos/testrepo/file.txt" ]]; then
+    pass=$((pass + 1)); echo "ok   - lock: repos become read-only"
+else
+    fail=$((fail + 1)); echo "FAIL - lock: repos become read-only"
+fi
+cleanup_workspace
+
+# -- unlock: restores write permissions --
+setup_workspace
+mkdir -p "$TEST_WS/repos/testrepo"
+touch "$TEST_WS/repos/testrepo/file.txt"
+"$MICKEY" lock >/dev/null 2>&1
+"$MICKEY" unlock >/dev/null 2>&1
+if [[ -w "$TEST_WS/repos/testrepo/file.txt" ]]; then
+    pass=$((pass + 1)); echo "ok   - unlock: repos become writable again"
+else
+    fail=$((fail + 1)); echo "FAIL - unlock: repos become writable again"
+fi
+cleanup_workspace
+
 echo ""
 echo "$((pass + fail)) tests, $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
