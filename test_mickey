@@ -1,222 +1,367 @@
-#!/usr/bin/env bash
-# Lean sanity tests for the mickey script.
-# Tests argument parsing, usage output, and script structure.
-# Does NOT require Docker — only validates the script itself.
-set -euo pipefail
+#!/usr/bin/env python3
+"""Tests for mickey CLI."""
+import os
+import subprocess
+import tempfile
+from pathlib import Path
 
-MICKEY="$(cd "$(dirname "$0")" && pwd)/mickey"
-pass=0
-fail=0
+MICKEY = Path(__file__).parent / "mickey"
 
-assert_exits() {
-    local expected=$1 desc=$2; shift 2
-    local actual=0
-    "$@" >/dev/null 2>&1 || actual=$?
-    if [[ $actual -eq $expected ]]; then
-        pass=$((pass + 1)); echo "ok   - $desc"
-    else
-        fail=$((fail + 1)); echo "FAIL - $desc (expected exit $expected, got $actual)"
-    fi
-}
 
-assert_output_matches() {
-    local pattern=$1 desc=$2; shift 2
-    local output
-    output=$("$@" 2>&1) || true
-    if echo "$output" | grep -qE "$pattern"; then
-        pass=$((pass + 1)); echo "ok   - $desc"
-    else
-        fail=$((fail + 1)); echo "FAIL - $desc (output missing /$pattern/)"
-    fi
-}
+def run(cmd, **kw):
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
 
 # -- Script structure --
-assert_exits 0 "script passes bash -n syntax check" bash -n "$MICKEY"
+
+def test_syntax():
+    assert run(["python3", "-m", "py_compile", str(MICKEY)]).returncode == 0
+
 
 # -- No args --
-assert_exits 1 "no args exits 1" "$MICKEY"
-assert_output_matches "^Usage:" "no args shows usage" "$MICKEY"
+
+def test_no_args_exits_nonzero():
+    assert run([str(MICKEY)]).returncode != 0
+
+
+def test_no_args_shows_usage():
+    r = run([str(MICKEY)])
+    out = (r.stdout + r.stderr).lower()
+    assert "usage:" in out
+
 
 # -- Unknown command --
-assert_exits 1 "unknown command exits 1" "$MICKEY" badcmd
-assert_output_matches "^Usage:" "unknown command shows usage" "$MICKEY" badcmd
 
-# -- hire: missing name --
-assert_exits 1 "hire without name exits 1" "$MICKEY" hire
-assert_output_matches "mickey hire" "hire without name shows correct usage" "$MICKEY" hire
+def test_unknown_command_exits_nonzero():
+    r = run([str(MICKEY), "badcmd"])
+    assert r.returncode != 0
 
-# -- whip: argument parsing --
-assert_exits 1 "whip --model without value exits 1" "$MICKEY" whip --model
-assert_exits 1 "whip -j without value exits 1" "$MICKEY" whip -j
-assert_exits 1 "whip -j 0 exits 1" "$MICKEY" whip -j 0
-assert_exits 1 "whip -j negative exits 1" "$MICKEY" whip -j -1
-assert_exits 1 "whip -j non-numeric exits 1" "$MICKEY" whip -j abc
-assert_output_matches "positive integer" "whip -j 0 shows error" "$MICKEY" whip -j 0
-assert_output_matches "positive integer" "whip -j abc shows error" "$MICKEY" whip -j abc
 
-# -- sh: missing name --
-assert_exits 1 "sh without name exits 1" "$MICKEY" sh
-assert_output_matches "mickey sh" "sh without name shows correct usage" "$MICKEY" sh
+# -- Argument parsing --
 
-# -- fire: missing name --
-assert_exits 1 "fire without name exits 1" "$MICKEY" fire
-assert_output_matches "mickey fire" "fire without name shows correct usage" "$MICKEY" fire
+def test_hire_without_name():
+    r = run([str(MICKEY), "hire"])
+    assert r.returncode != 0
+
+
+def test_whip_j_zero():
+    r = run([str(MICKEY), "whip", "-j", "0"])
+    assert r.returncode != 0
+
+
+def test_whip_j_nonnumeric():
+    r = run([str(MICKEY), "whip", "-j", "abc"])
+    assert r.returncode != 0
+
+
+def test_sh_without_name():
+    r = run([str(MICKEY), "sh"])
+    assert r.returncode != 0
+
+
+def test_fire_without_name():
+    r = run([str(MICKEY), "fire"])
+    assert r.returncode != 0
+
 
 # -- Agent rules content --
-assert_exits 0 "AGENT_RULES variable is defined" grep -q "^AGENT_RULES=" "$MICKEY"
-assert_exits 0 "agent rules contain workspace layout" grep -q "Workspace layout" "$MICKEY"
-assert_exits 0 "agent rules contain producing output" grep -q "Producing output" "$MICKEY"
-assert_exits 0 "agent rules contain sanity test requirement" grep -q "make test" "$MICKEY"
-assert_exits 0 "agent rules contain wip directory" grep -q 'wip/' "$MICKEY"
-assert_exits 0 "agent rules contain deployment awareness" grep -q "Deployment awareness" "$MICKEY"
-assert_exits 0 "agent rules mention workspace-level TODO.md" grep -q 'WORKSPACE_DIR/TODO.md' "$MICKEY"
-assert_exits 0 "agent rules do NOT contain review process" bash -c "! grep -q 'Reviewing patches' '$MICKEY'"
-assert_exits 0 "no patch/ directory references in agent rules" bash -c "! grep -q 'WORKSPACE_DIR/patch/' '$MICKEY'"
 
-# -- am: merge-queue cleanup and push --
-assert_exits 0 "am cleans up empty merge-queue dirs" grep -q 'rmdir' "$MICKEY"
-assert_exits 0 "am tracks applied repos for push" grep -q 'applied_repos' "$MICKEY"
-assert_exits 0 "am push uses applied_repos array" grep -q 'applied_repos\[@\]' "$MICKEY"
+def test_agent_rules_workspace_layout():
+    src = MICKEY.read_text()
+    assert "Workspace layout" in src
 
-# -- am: TODO.md update after applying patches --
-assert_exits 0 "am collects patch summaries" grep -q 'applied_summaries' "$MICKEY"
-assert_exits 0 "am checks for TODO.md before updating" grep -q 'todo_file.*TODO.md' "$MICKEY"
-assert_exits 0 "am update prompt instructs to remove addressed items" grep -q 'remove items addressed' "$MICKEY"
-assert_exits 0 "am TODO.md update is non-fatal on failure" grep -q 'non-fatal' "$MICKEY"
 
-# -- am: verify_prompt includes PII scanning --
-assert_exits 0 "am verify_prompt mentions personal information" grep -q 'personal information' "$MICKEY"
-assert_exits 0 "am verify_prompt includes PII categories" grep -q 'Real names' "$MICKEY"
-assert_exits 0 "am verify_prompt instructs to delete PII patches" grep -q 'DELETE the patch' "$MICKEY"
-assert_exits 0 "am verify_prompt requires semantic understanding beyond regex" grep -q 'semantic understanding' "$MICKEY"
-assert_exits 0 "am verify_prompt includes contextual PII category" grep -q 'Contextual PII' "$MICKEY"
-assert_exits 0 "am verify_prompt checks for composite identification" grep -q 'Composite identification' "$MICKEY"
+def test_agent_rules_producing_output():
+    src = MICKEY.read_text()
+    assert "Producing output" in src
 
-# -- Task selection model --
-assert_exits 0 "agent rules include coin flip for task source" grep -q 'RANDOM % 2' "$MICKEY"
-assert_exits 0 "agent rules describe workspace TODO path" grep -q 'workspace TODO' "$MICKEY"
-assert_exits 0 "agent rules describe random repo path" grep -q 'random repo' "$MICKEY"
-assert_exits 0 "agent rules allow exit without patch" grep -q 'exit cleanly without producing a patch' "$MICKEY"
-assert_exits 0 "no DIFFICULT_TASK_PROMPT variable" bash -c "! grep -q '^DIFFICULT_TASK_PROMPT=' '$MICKEY'"
 
-# -- Agent output prefixing --
-assert_exits 0 "whip defines color palette array" grep -q 'colors=(' "$MICKEY"
-assert_exits 0 "whip pipes agent output through awk prefix" grep -q 'awk -v name=' "$MICKEY"
-assert_exits 0 "awk uses fflush for unbuffered output" grep -q 'fflush()' "$MICKEY"
+def test_agent_rules_make_test():
+    src = MICKEY.read_text()
+    assert "make test" in src
+
+
+def test_agent_rules_merge_queue():
+    src = MICKEY.read_text()
+    assert "merge-queue" in src
+
+
+def test_agent_rules_deployment():
+    src = MICKEY.read_text()
+    assert "Deployment awareness" in src
+
+
+def test_agent_rules_implicit_todo():
+    src = MICKEY.read_text()
+    assert "implicit todo" in src.lower()
+
+
+def test_agent_rules_receive_task():
+    src = MICKEY.read_text()
+    assert "Your task" in src
+
+
+# -- No old model references --
+
+def test_no_coin_flip():
+    src = MICKEY.read_text()
+    assert "RANDOM % 2" not in src
+
+
+def test_no_todo_md_references():
+    src = MICKEY.read_text()
+    assert "TODO.md" not in src
+
+
+# -- Task selection --
+
+def test_pick_task_function():
+    src = MICKEY.read_text()
+    assert "pick_task" in src
+    assert "todo" in src
+    assert "implicit" in src.lower()
+
 
 # -- Usage text --
-assert_output_matches "whip" "usage mentions whip command" "$MICKEY"
-assert_output_matches "am" "usage mentions am command" "$MICKEY"
-assert_output_matches "status" "usage mentions status command" "$MICKEY"
-assert_output_matches "wip/" "usage mentions wip directory" "$MICKEY"
 
-# -- Status command structure --
-assert_exits 0 "status command is handled in case statement" grep -q "status)" "$MICKEY"
-assert_exits 0 "status shows Work In Progress section" grep -q "Work In Progress" "$MICKEY"
-assert_exits 0 "status shows Merge Queue section" grep -q "Merge Queue" "$MICKEY"
+def test_usage_mentions_whip():
+    r = run([str(MICKEY)])
+    out = r.stdout + r.stderr
+    assert "whip" in out
 
-# -- Whip activity watcher --
-assert_exits 0 "whip has activity watcher background loop" grep -q "activity watcher" "$MICKEY"
-assert_exits 0 "watcher reports claimed TODOs" grep -q "CLAIMED" "$MICKEY"
-assert_exits 0 "watcher reports submitted patches" grep -q ">>> PATCH" "$MICKEY"
 
-# ===== E2E tests (mock workspace, no Docker required) =====
+def test_usage_mentions_am():
+    r = run([str(MICKEY)])
+    out = r.stdout + r.stderr
+    assert "am" in out
 
-# Helpers to create/destroy a temporary workspace
-setup_workspace() {
-    TEST_WS=$(mktemp -d)
-    mkdir -p "$TEST_WS/wip" "$TEST_WS/merge-queue" "$TEST_WS/repos"
-    export WORKSPACE_DIR="$TEST_WS"
-}
-cleanup_workspace() {
-    chmod -R u+w "$TEST_WS" 2>/dev/null || true
-    rm -rf "$TEST_WS"
-    unset WORKSPACE_DIR
-}
 
-# -- status: empty workspace shows (none) --
-setup_workspace
-assert_output_matches "\\(none\\)" "status: empty workspace shows (none)" "$MICKEY" status
-cleanup_workspace
+def test_usage_mentions_status():
+    r = run([str(MICKEY)])
+    out = r.stdout + r.stderr
+    assert "status" in out
 
-# -- status: displays wip file content --
-setup_workspace
-cat > "$TEST_WS/wip/test.wip" <<WIP
-repo: testrepo
-task: test task description
-WIP
-assert_output_matches "test task description" "status: shows wip claim content" "$MICKEY" status
-cleanup_workspace
 
-# -- status: displays patch subjects from merge-queue --
-setup_workspace
-mkdir -p "$TEST_WS/merge-queue/testrepo"
-cat > "$TEST_WS/merge-queue/testrepo/20260101-000000-test.patch" <<PATCH
-From abc123 Mon Sep 17 00:00:00 2001
-From: test [bot] <test@agent.local>
-Date: Wed, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH] Add widget feature
+# ===== E2E tests with temp workspace =====
 
----
-PATCH
-assert_output_matches "Add widget feature" "status: shows patch subject from merge-queue" "$MICKEY" status
-cleanup_workspace
+def make_workspace(tmp):
+    """Create a minimal workspace structure."""
+    for d in ["wip", "merge-queue", "repos", "todos"]:
+        os.makedirs(f"{tmp}/{d}", exist_ok=True)
+    return {**os.environ, "WORKSPACE_DIR": tmp}
 
-# -- am: no patches exits 0 with message --
-setup_workspace
-assert_exits 0 "am: no patches exits 0" "$MICKEY" am
-assert_output_matches "No patches" "am: no patches shows message" "$MICKEY" am
-cleanup_workspace
 
-# -- reset: confirmed with y deletes files --
-setup_workspace
-touch "$TEST_WS/wip/test.wip"
-mkdir -p "$TEST_WS/merge-queue/repo"
-touch "$TEST_WS/merge-queue/repo/test.patch"
-echo "y" | "$MICKEY" reset >/dev/null 2>&1
-if [[ ! -f "$TEST_WS/wip/test.wip" ]] && [[ ! -f "$TEST_WS/merge-queue/repo/test.patch" ]]; then
-    pass=$((pass + 1)); echo "ok   - reset: y deletes wip and merge-queue files"
-else
-    fail=$((fail + 1)); echo "FAIL - reset: y deletes wip and merge-queue files"
-fi
-cleanup_workspace
+def test_status_empty():
+    with tempfile.TemporaryDirectory() as ws:
+        env = make_workspace(ws)
+        r = run([str(MICKEY), "status"], env=env)
+        assert "(none)" in r.stdout
 
-# -- reset: aborted with n keeps files --
-setup_workspace
-touch "$TEST_WS/wip/test.wip"
-echo "n" | "$MICKEY" reset >/dev/null 2>&1 || true
-if [[ -f "$TEST_WS/wip/test.wip" ]]; then
-    pass=$((pass + 1)); echo "ok   - reset: n keeps files intact"
-else
-    fail=$((fail + 1)); echo "FAIL - reset: n keeps files intact"
-fi
-cleanup_workspace
 
-# -- lock: makes repos/ read-only --
-setup_workspace
-mkdir -p "$TEST_WS/repos/testrepo"
-touch "$TEST_WS/repos/testrepo/file.txt"
-"$MICKEY" lock >/dev/null 2>&1
-if [[ ! -w "$TEST_WS/repos/testrepo/file.txt" ]]; then
-    pass=$((pass + 1)); echo "ok   - lock: repos become read-only"
-else
-    fail=$((fail + 1)); echo "FAIL - lock: repos become read-only"
-fi
-cleanup_workspace
+def test_status_shows_todo():
+    with tempfile.TemporaryDirectory() as ws:
+        env = make_workspace(ws)
+        Path(f"{ws}/todos/test-task.txt").write_text("Fix the widget")
+        r = run([str(MICKEY), "status"], env=env)
+        assert "test-task" in r.stdout
+        assert "Fix the widget" in r.stdout
 
-# -- unlock: restores write permissions --
-setup_workspace
-mkdir -p "$TEST_WS/repos/testrepo"
-touch "$TEST_WS/repos/testrepo/file.txt"
-"$MICKEY" lock >/dev/null 2>&1
-"$MICKEY" unlock >/dev/null 2>&1
-if [[ -w "$TEST_WS/repos/testrepo/file.txt" ]]; then
-    pass=$((pass + 1)); echo "ok   - unlock: repos become writable again"
-else
-    fail=$((fail + 1)); echo "FAIL - unlock: repos become writable again"
-fi
-cleanup_workspace
 
-echo ""
-echo "$((pass + fail)) tests, $pass passed, $fail failed"
-[[ $fail -eq 0 ]]
+def test_status_shows_wip():
+    with tempfile.TemporaryDirectory() as ws:
+        env = make_workspace(ws)
+        Path(f"{ws}/wip/fix-login.txt").write_text("Fix login redirect bug")
+        r = run([str(MICKEY), "status"], env=env)
+        assert "fix-login" in r.stdout
+
+
+def test_status_shows_patches():
+    with tempfile.TemporaryDirectory() as ws:
+        env = make_workspace(ws)
+        os.makedirs(f"{ws}/merge-queue/testrepo")
+        Path(f"{ws}/merge-queue/testrepo/test.patch").write_text(
+            "From abc123 Mon Sep 17 00:00:00 2001\n"
+            "From: test [bot] <test@agent.local>\n"
+            "Date: Wed, 1 Jan 2026 00:00:00 +0000\n"
+            "Subject: [PATCH] Add widget feature\n\n---\n"
+        )
+        r = run([str(MICKEY), "status"], env=env)
+        assert "Add widget feature" in r.stdout
+
+
+def test_am_no_patches():
+    with tempfile.TemporaryDirectory() as ws:
+        env = make_workspace(ws)
+        r = run([str(MICKEY), "am"], env=env)
+        assert r.returncode == 0
+        assert "No patches" in r.stdout
+
+
+def test_reset_confirmed():
+    with tempfile.TemporaryDirectory() as ws:
+        env = make_workspace(ws)
+        os.makedirs(f"{ws}/merge-queue/repo", exist_ok=True)
+        Path(f"{ws}/wip/test.txt").write_text("task")
+        Path(f"{ws}/merge-queue/repo/test.patch").write_text("patch")
+        Path(f"{ws}/todos/task.txt").write_text("todo")
+        r = run([str(MICKEY), "reset"], input="y\n", env=env)
+        assert not Path(f"{ws}/wip/test.txt").exists()
+        assert not Path(f"{ws}/merge-queue/repo/test.patch").exists()
+        assert not Path(f"{ws}/todos/task.txt").exists()
+
+
+def test_reset_aborted():
+    with tempfile.TemporaryDirectory() as ws:
+        env = make_workspace(ws)
+        Path(f"{ws}/wip/test.txt").write_text("task")
+        r = run([str(MICKEY), "reset"], input="n\n", env=env)
+        assert Path(f"{ws}/wip/test.txt").exists()
+
+
+def test_lock():
+    with tempfile.TemporaryDirectory() as ws:
+        env = make_workspace(ws)
+        os.makedirs(f"{ws}/repos/testrepo")
+        Path(f"{ws}/repos/testrepo/file.txt").write_text("content")
+        run([str(MICKEY), "lock"], env=env)
+        assert not os.access(f"{ws}/repos/testrepo/file.txt", os.W_OK)
+        # Cleanup: restore write so tempdir can be deleted
+        run([str(MICKEY), "unlock"], env=env)
+
+
+def test_unlock():
+    with tempfile.TemporaryDirectory() as ws:
+        env = make_workspace(ws)
+        os.makedirs(f"{ws}/repos/testrepo")
+        Path(f"{ws}/repos/testrepo/file.txt").write_text("content")
+        run([str(MICKEY), "lock"], env=env)
+        run([str(MICKEY), "unlock"], env=env)
+        assert os.access(f"{ws}/repos/testrepo/file.txt", os.W_OK)
+
+
+# -- am with real git repo --
+
+def test_am_applies_patch():
+    with tempfile.TemporaryDirectory() as ws:
+        env = make_workspace(ws)
+        repo = Path(ws) / "repos" / "testrepo"
+        repo.mkdir(parents=True)
+        # Init a git repo
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=repo, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=repo, capture_output=True,
+        )
+        (repo / "file.txt").write_text("hello\n")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "init"], cwd=repo, capture_output=True,
+        )
+        # Create a patch from a branch
+        subprocess.run(
+            ["git", "checkout", "-b", "feature"], cwd=repo,
+            capture_output=True,
+        )
+        (repo / "file.txt").write_text("hello world\n")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "add world"],
+            cwd=repo, capture_output=True,
+        )
+        mq = Path(ws) / "merge-queue" / "testrepo"
+        mq.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "format-patch", "main", "--stdout"],
+            cwd=repo, capture_output=True, text=True,
+        ).stdout
+        patch_content = subprocess.run(
+            ["git", "format-patch", "main", "--stdout"],
+            cwd=repo, capture_output=True, text=True,
+        ).stdout
+        # Reset to main
+        subprocess.run(
+            ["git", "checkout", "main"], cwd=repo, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "branch", "-D", "feature"], cwd=repo,
+            capture_output=True,
+        )
+        (mq / "test.patch").write_text(patch_content)
+        r = run([str(MICKEY), "am"], env=env)
+        assert r.returncode == 0
+        assert "Applying" in r.stdout
+        assert not (mq / "test.patch").exists()
+        # Verify the patch was applied
+        assert "world" in (repo / "file.txt").read_text()
+
+
+def test_am_failed_patch_creates_todo():
+    with tempfile.TemporaryDirectory() as ws:
+        env = make_workspace(ws)
+        repo = Path(ws) / "repos" / "testrepo"
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=repo, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=repo, capture_output=True,
+        )
+        (repo / "file.txt").write_text("hello\n")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "init"], cwd=repo, capture_output=True,
+        )
+        # Write a bogus patch
+        mq = Path(ws) / "merge-queue" / "testrepo"
+        mq.mkdir(parents=True, exist_ok=True)
+        (mq / "bad.patch").write_text(
+            "From abc123 Mon Sep 17 00:00:00 2001\n"
+            "From: test <test@test.com>\n"
+            "Date: Wed, 1 Jan 2026 00:00:00 +0000\n"
+            "Subject: [PATCH] Bad patch\n\n"
+            "---\n"
+            " nonexistent.txt | 1 +\n"
+            " 1 file changed\n\n"
+            "diff --git a/nonexistent.txt b/nonexistent.txt\n"
+            "--- a/nonexistent.txt\n"
+            "+++ b/nonexistent.txt\n"
+            "@@ -1 +1,2 @@\n"
+            " existing\n"
+            "+new line\n"
+            "--\n2.0.0\n"
+        )
+        r = run([str(MICKEY), "am"], env=env)
+        assert "FAILED" in r.stdout
+        # Check that a fix todo was created
+        todos_dir = Path(ws) / "todos"
+        fix_files = list(todos_dir.glob("fix-*.txt"))
+        assert len(fix_files) == 1
+        assert "Bad patch" in fix_files[0].read_text()
+
+
+if __name__ == "__main__":
+    # Simple test runner fallback if pytest isn't available
+    import traceback
+    tests = [
+        v for k, v in sorted(globals().items())
+        if k.startswith("test_") and callable(v)
+    ]
+    passed = failed = 0
+    for test in tests:
+        try:
+            test()
+            passed += 1
+            print(f"ok   - {test.__name__}")
+        except Exception:
+            failed += 1
+            print(f"FAIL - {test.__name__}")
+            traceback.print_exc()
+    print(f"\n{passed + failed} tests, {passed} passed, {failed} failed")
+    raise SystemExit(1 if failed else 0)

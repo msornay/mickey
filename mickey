@@ -1,113 +1,54 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+"""Mickey - AI agent orchestrator."""
+import argparse
+import glob
+import os
+import queue
+import random
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+from pathlib import Path
 
-AGENT_RULES='# Agent Rules
+AGENT_RULES = r"""# Agent Rules
 
 You are a developer agent working inside a Docker sandbox.
 
 ## Workspace layout
-- $WORKSPACE_DIR/ is synced to the host. **NEVER modify files here directly** — only write to wip/ and merge-queue/.
-- $WORKSPACE_DIR/repos/ contains git repos. **NEVER write to this directory or any repo inside it.** Only use it as a clone source.
-- ~/work/ is your local workspace (not synced). Clone repos here and do all work here.
-- $WORKSPACE_DIR/wip/ is the shared work-in-progress directory. Create lock files here to claim TODOs you are working on.
-- $WORKSPACE_DIR/merge-queue/<repo>/ is the merge queue, organized by repo. Patches here are ready for the human to apply.
+- $WORKSPACE_DIR/ is synced to the host. NEVER modify files here directly — only write to merge-queue/.
+- $WORKSPACE_DIR/repos/ contains git repos. NEVER write to this directory. Only use it as a clone source.
+- ~/work/ is your local workspace. Clone repos here and do all work here.
+- $WORKSPACE_DIR/merge-queue/<repo>/ is the merge queue. Patches here are ready for the human to apply.
 
-## Default behavior
+## Your task
+You receive a specific task as your prompt. Work on it directly.
 
-If you are given no specific task (empty or missing instructions), pick up useful work automatically:
-
-### Step 1: Choose a task source
-
-Flip a coin to decide where to find work:
-```
-COIN=$((RANDOM % 2))
-```
-
-**If COIN=0 — workspace TODO:** Read `$WORKSPACE_DIR/TODO.md`. Pick a task from it. These are cross-project tasks that may reference specific repos.
-
-**If COIN=1 — random repo:** Pick a repo at random from `$WORKSPACE_DIR/repos/`. Read that repo'\''s `TODO.md` (or `TODO` file). If the repo has no TODO file or no actionable items, also check for inline TODO/FIXME/HACK/XXX comments in the code and implicit TODOs (e.g., missing Makefile with `test` and `deploy` targets).
-
-### Step 2: Validate and claim
-
-1. **Check existing patches.** Read patch files in `$WORKSPACE_DIR/merge-queue/<repo>/` and examine their commit messages (the `Subject:` line). Skip TODOs already addressed by an existing patch.
-2. **Check for in-progress work.** Read all `.wip` files in `$WORKSPACE_DIR/wip/`. Each is a short message from another agent describing what they'\''re working on. Skip any TODO that overlaps with an existing wip message (same repo and similar intent, even if worded differently).
-3. **Skip TODOs that have unmet prerequisites.** If a TODO depends on other TODOs being completed first (e.g., it references another task, needs infrastructure that doesn'\''t exist yet, or is sequenced after other items in TODO.md), skip it. Only pick TODOs whose prerequisites are already done or that have no dependencies.
-4. If no actionable TODO remains after filtering, **exit cleanly without producing a patch**. This is fine — not every run needs to produce output.
-5. **Wait a random delay between 0 and 30 seconds** to stagger agent starts:
-   ```
-   sleep $((RANDOM % 30))
-   ```
-6. **Re-read wip/** after the delay — another agent may have claimed the same TODO while you waited. If your chosen TODO now overlaps with a new wip message, pick a different one (or exit if none remain).
-7. Claim the TODO by posting a `.wip` file describing your intent:
-   ```
-   cat > $WORKSPACE_DIR/wip/$(date +%Y%m%d-%H%M%S)-$(hostname).wip <<WIP
-   repo: <repo>
-   task: <one-line description of what you are about to do>
-   WIP
-   ```
-8. Work on it using the normal "Starting work" and "Producing output" process.
-9. In your commit message, reference the original TODO (file and line number) so it can be traced back.
-
-### If there is nothing to do
-
-If there are no actionable TODOs from your chosen source, say so and stop. Do not produce a patch.
+If your task says "implicit todo", explore the assigned repo for improvements:
+inline TODO/FIXME/HACK/XXX comments, missing tests, code quality issues, documentation.
+Exit cleanly without producing a patch if nothing needs work.
 
 ## Starting work
-1. Get the repo(s) you need. If ~/work/<repo> doesn'\''t exist, clone it:
-     git clone $WORKSPACE_DIR/repos/<repo> ~/work/<repo>
-   If it already exists, pull latest:
-     cd ~/work/<repo> && git checkout main && git pull $WORKSPACE_DIR/repos/<repo> main
-2. Work on a descriptive branch:
-     cd ~/work/<repo> && git checkout -b <branch-name>
-3. Set git author to identify this agent and model:
-     cd ~/work/<repo>
-     git config user.name "$(hostname) [bot]"
-     git config user.email "$(hostname)+${ANTHROPIC_MODEL:-claude}@agent.local"
+1. Clone: git clone $WORKSPACE_DIR/repos/<repo> ~/work/<repo>
+   Or update: cd ~/work/<repo> && git checkout main && git pull $WORKSPACE_DIR/repos/<repo> main
+2. Apply pending patches from merge-queue: if $WORKSPACE_DIR/merge-queue/<repo>/ has .patch files, apply them to your local clone in sorted order:
+   for patch in $(ls $WORKSPACE_DIR/merge-queue/<repo>/*.patch 2>/dev/null | sort); do git am "$patch"; done
+   This ensures you work on top of other agents' pending changes, reducing conflicts.
+3. Branch: cd ~/work/<repo> && git checkout -b <branch-name>
+4. Author: git config user.name "$(hostname) [bot]" && git config user.email "$(hostname)+${ANTHROPIC_MODEL:-claude}@agent.local"
 
 ## Producing output
-When your task is complete, run sanity tests and produce a patch:
-
-1. **Run sanity tests.** Every repo must have a Makefile with a `test` target. Run it before producing a patch:
-   ```
-   cd ~/work/<repo>
-   make test
-   ```
-   If tests fail, fix them before proceeding. Do NOT submit a patch with failing tests.
-
-2. **Squash to a single commit** with a datetime-prefixed patch:
-   ```
+1. Run `make test` before producing a patch. Never submit with failing tests.
+2. Squash to a single commit:
    TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-   cd ~/work/<repo>
-   git checkout -b squash-tmp main
-   git merge --squash <branch-name>
-   git commit -m "<descriptive message>"
-   ```
-
-3. **If the patch addresses a repo TODO**: check if the repo has a `TODO.md` (or `TODO`) file and the commit clearly addresses one of its items. If so, remove the addressed line(s) from that file and amend the commit:
-   ```
-   # edit TODO.md to remove the addressed item(s)
-   git add TODO.md
-   git commit --amend --no-edit
-   ```
-
-4. **Create the merge-queue subdirectory if needed and produce the patch:**
-   ```
+   cd ~/work/<repo> && git checkout -b squash-tmp main
+   git merge --squash <branch> && git commit -m "<message>"
+3. Produce the patch:
    mkdir -p $WORKSPACE_DIR/merge-queue/<repo>
-   git format-patch main --stdout > $WORKSPACE_DIR/merge-queue/<repo>/${TIMESTAMP}-$(hostname)-<short-name>.patch
-   ```
-
-5. **Verify the patch applies cleanly:**
-   ```
-   cd ~/work/<repo>
-   git checkout main
-   git am --check $WORKSPACE_DIR/merge-queue/<repo>/${TIMESTAMP}-$(hostname)-<short-name>.patch
-   ```
-   If it fails, fix your branch and regenerate the patch.
-
-6. **Clean up your wip file** after submitting the patch:
-   ```
-   rm -f $WORKSPACE_DIR/wip/*-$(hostname).wip
-   ```
+   git format-patch --base=main main --stdout > $WORKSPACE_DIR/merge-queue/<repo>/${TIMESTAMP}-$(hostname)-<short-name>.patch
+4. Verify: git checkout main && git am --check <patch-file>
 
 ## Deployment awareness
 Deploying code is done by a human, not by agents. When your work involves deployment-relevant changes (configuration, infrastructure, environment variables, etc.):
@@ -118,398 +59,636 @@ Deploying code is done by a human, not by agents. When your work involves deploy
 4. Include deployment notes in your commit message when relevant.
 
 ## Rules
-- NEVER write to $WORKSPACE_DIR/ except $WORKSPACE_DIR/wip/ and $WORKSPACE_DIR/merge-queue/. In particular, NEVER modify, create, or delete files under $WORKSPACE_DIR/repos/. Corrupting host repos is unrecoverable.
-- NEVER delete files from $WORKSPACE_DIR/merge-queue/. Only CREATE new patch files there. Existing patches are for human review — removing them loses work.
-- NEVER enter plan mode. Do the work directly and produce a patch.
-- NEVER push to any remote
-- NEVER create pull requests
-- Always run `make test` before producing a patch. Never submit a patch with failing sanity tests.
+- NEVER write to $WORKSPACE_DIR/ except $WORKSPACE_DIR/merge-queue/
+- NEVER modify, create, or delete files under $WORKSPACE_DIR/repos/
+- NEVER delete files from $WORKSPACE_DIR/merge-queue/
+- NEVER enter plan mode
+- NEVER push to any remote or create pull requests
+- Always run make test before producing a patch
 - Make clean, atomic commits with good messages
-- Select TODOs at random — do not always pick the same one'
+"""
 
-DEFAULT_PROMPT="Follow your default behavior instructions: find TODOs in repos and work on them."
+DEFAULT_PROMPT = (
+    "Implicit todo: explore a random repo under $WORKSPACE_DIR/repos/. "
+    "Clone it and look for improvements (inline TODOs, missing tests, "
+    "code quality, documentation). Exit cleanly if nothing needs work."
+)
 
-usage() {
-  cat <<'USAGE'
-Usage: mickey <command> [args]
+COLORS = ["31", "32", "33", "34", "35", "36"]  # red, green, yellow, blue, magenta, cyan
+_color_idx = 0
+_color_lock = threading.Lock()
 
+
+def workspace() -> Path:
+    return Path(os.environ.get("WORKSPACE_DIR", Path.home() / "src"))
+
+
+# --- Task selection ---
+
+def pick_task(ws: Path):
+    """Pick a task: 90% from todos/, 10% implicit todo on random repo.
+
+    Returns (wip_path_or_None, prompt_text). Returns (None, None) if nothing.
+    """
+    # 10% chance: implicit todo
+    if random.randint(1, 10) == 1:
+        repos_dir = ws / "repos"
+        if repos_dir.is_dir():
+            repos = [
+                p.name for p in repos_dir.iterdir()
+                if p.is_dir() and not p.name.startswith(".")
+            ]
+            if repos:
+                repo = random.choice(repos)
+                return None, (
+                    f"Implicit todo: explore $WORKSPACE_DIR/repos/{repo}. "
+                    "Clone it and look for improvements (inline TODOs, "
+                    "missing tests, code quality, documentation). "
+                    "Exit cleanly if nothing needs work."
+                )
+
+    # 90% chance: pick from todos/
+    todos_dir = ws / "todos"
+    if todos_dir.is_dir():
+        todos = list(todos_dir.glob("*.txt"))
+        if todos:
+            pick = random.choice(todos)
+            wip_dir = ws / "wip"
+            wip_dir.mkdir(exist_ok=True)
+            dest = wip_dir / pick.name
+            content = pick.read_text()
+            pick.rename(dest)
+            return dest, content
+
+    # Fallback: implicit todo
+    repos_dir = ws / "repos"
+    if repos_dir.is_dir():
+        repos = [
+            p.name for p in repos_dir.iterdir()
+            if p.is_dir() and not p.name.startswith(".")
+        ]
+        if repos:
+            repo = random.choice(repos)
+            return None, (
+                f"Implicit todo: explore $WORKSPACE_DIR/repos/{repo}. "
+                "Clone it and look for improvements (inline TODOs, "
+                "missing tests, code quality, documentation). "
+                "Exit cleanly if nothing needs work."
+            )
+
+    return None, None
+
+
+def max_patches_per_repo(ws: Path) -> int:
+    """Count .patch files per subdirectory in merge-queue/, return the max."""
+    mq = ws / "merge-queue"
+    if not mq.is_dir():
+        return 0
+    counts = {}
+    for patch in mq.rglob("*.patch"):
+        repo = patch.parent.name
+        counts[repo] = counts.get(repo, 0) + 1
+    return max(counts.values()) if counts else 0
+
+
+def extract_subject(patch: Path) -> str:
+    """Extract Subject line from a patch file."""
+    try:
+        with open(patch) as f:
+            for line in f:
+                if line.startswith("Subject:"):
+                    return re.sub(
+                        r"^Subject:\s*\[PATCH[^\]]*\]\s*", "", line
+                    ).strip()
+    except OSError:
+        pass
+    return "(unknown)"
+
+
+# --- Agent management ---
+
+def get_agents() -> list:
+    """List available agent names from docker sandbox ls."""
+    try:
+        r = subprocess.run(
+            ["docker", "sandbox", "ls"],
+            capture_output=True, text=True, timeout=10,
+        )
+        lines = r.stdout.strip().splitlines()
+        return [line.split()[0] for line in lines[1:] if line.strip()]
+    except (subprocess.TimeoutExpired, FileNotFoundError, IndexError):
+        return []
+
+
+def start_agent(name, prompt, ws, model, done_q):
+    """Start an agent in a background thread. Returns the thread."""
+    global _color_idx
+    with _color_lock:
+        color = COLORS[_color_idx % len(COLORS)]
+        _color_idx += 1
+
+    def run():
+        cmd = [
+            "docker", "sandbox", "run", name, "--",
+            "--append-system-prompt", AGENT_RULES, "-p", prompt,
+        ]
+        env = dict(os.environ)
+        if model:
+            env["ANTHROPIC_MODEL"] = model
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, env=env,
+            )
+            prefix = f"\033[{color}m[{name}]\033[0m"
+            for line in proc.stdout:
+                print(f"{prefix} {line}", end="", flush=True)
+            proc.wait()
+            if proc.returncode == 1:
+                print(
+                    f"{prefix} exited with code 1 "
+                    "(credits exhausted?). Waiting 5 min...",
+                    flush=True,
+                )
+                import time
+                time.sleep(300)
+        except Exception as e:
+            print(f"\033[{color}m[{name}]\033[0m Error: {e}", flush=True)
+        finally:
+            done_q.put(name)
+
+    t = threading.Thread(target=run, daemon=True, name=name)
+    t.start()
+    return t
+
+
+# --- Activity watcher ---
+
+def activity_watcher(ws: Path, stop_event: threading.Event):
+    """Daemon thread that monitors wip/ and merge-queue/ for changes."""
+    import time
+    wip_dir = ws / "wip"
+    mq_dir = ws / "merge-queue"
+
+    def snapshot_wip():
+        if wip_dir.is_dir():
+            return set(wip_dir.glob("*.txt"))
+        return set()
+
+    def snapshot_patches():
+        if mq_dir.is_dir():
+            return set(mq_dir.rglob("*.patch"))
+        return set()
+
+    prev_wip = snapshot_wip()
+    prev_patches = snapshot_patches()
+
+    while not stop_event.is_set():
+        stop_event.wait(10)
+        if stop_event.is_set():
+            break
+
+        cur_wip = snapshot_wip()
+        for f in cur_wip - prev_wip:
+            try:
+                content = f.read_text().strip().split("\n")[0]
+                print(f">>> CLAIMED: {f.name}: {content}", flush=True)
+            except OSError:
+                pass
+        for f in prev_wip - cur_wip:
+            print(f">>> DONE: {f.stem}", flush=True)
+        prev_wip = cur_wip
+
+        cur_patches = snapshot_patches()
+        for f in cur_patches - prev_patches:
+            repo = f.parent.name
+            subject = extract_subject(f)
+            print(f">>> PATCH: {repo} — {subject}", flush=True)
+        prev_patches = cur_patches
+
+
+# --- Lock/unlock helpers ---
+
+def lock(ws: Path):
+    repos_dir = ws / "repos"
+    if repos_dir.is_dir():
+        subprocess.run(
+            ["chmod", "-R", "a-w", str(repos_dir)],
+            capture_output=True,
+        )
+
+
+def unlock(ws: Path):
+    repos_dir = ws / "repos"
+    if repos_dir.is_dir():
+        subprocess.run(
+            ["chmod", "-R", "u+w", str(repos_dir)],
+            capture_output=True,
+        )
+
+
+# --- Commands ---
+
+def cmd_hire(args):
+    name = args.name
+    subprocess.run(
+        ["docker", "sandbox", "create", "--name", name, "claude",
+         str(workspace())],
+        check=True,
+    )
+    subprocess.run(["docker", "sandbox", "run", name], check=True)
+
+
+def cmd_whip(args):
+    ws = workspace()
+    model = args.model
+
+    # Determine agents to use
+    all_agents = get_agents()
+    if not all_agents:
+        print("No agents found. Hire some first: mickey hire <name>")
+        return
+
+    if args.j is not None:
+        if args.j < 1:
+            print("Error: -j requires a positive integer.", file=sys.stderr)
+            sys.exit(1)
+        if len(all_agents) < args.j:
+            print(
+                f"Requested {args.j} agents but only "
+                f"{len(all_agents)} available.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        agents = all_agents[:args.j]
+    else:
+        agents = all_agents
+
+    # Parse explicit prompts (colon-separated if provided)
+    explicit_prompts = {}
+    if args.prompts:
+        parts = ":".join(args.prompts).split(":")
+        for i, prompt in enumerate(parts):
+            if i < len(agents) and prompt.strip():
+                explicit_prompts[agents[i]] = prompt.strip()
+
+    done_q = queue.Queue()
+    running = {}
+    stop_event = threading.Event()
+    procs = []
+
+    # Lock repos
+    lock(ws)
+
+    # Start activity watcher
+    watcher = threading.Thread(
+        target=activity_watcher, args=(ws, stop_event), daemon=True,
+    )
+    watcher.start()
+
+    def cleanup(signum=None, frame=None):
+        stop_event.set()
+        # Stop all docker sandbox agents
+        for name in list(running):
+            try:
+                subprocess.run(
+                    ["docker", "sandbox", "stop", name],
+                    capture_output=True, timeout=5,
+                )
+            except Exception:
+                pass
+        unlock(ws)
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, cleanup)
+    signal.signal(signal.SIGTERM, cleanup)
+
+    # Start all agents with initial tasks
+    for name in agents:
+        if name in explicit_prompts:
+            prompt = explicit_prompts[name]
+            wip_path = None
+        else:
+            wip_path, prompt = pick_task(ws)
+        if prompt:
+            print(
+                f"Sending {name} to work"
+                f"{' (' + model + ')' if model else ''}...",
+            )
+            running[name] = start_agent(name, prompt, ws, model, done_q)
+
+    if not running:
+        print("No tasks available.")
+        unlock(ws)
+        return
+
+    try:
+        while True:
+            name = done_q.get()
+            running.pop(name, None)
+
+            # Conflict risk: any repo has > 2 patches
+            if max_patches_per_repo(ws) > 2:
+                # Wait for all remaining agents
+                for t in running.values():
+                    t.join()
+                running.clear()
+                unlock(ws)
+                do_am(ws, push=True)
+                lock(ws)
+                # Restart ALL agents
+                for n in agents:
+                    wip_path, prompt = pick_task(ws)
+                    if prompt:
+                        print(f"Sending {n} to work (post-am)...")
+                        running[n] = start_agent(
+                            n, prompt, ws, model, done_q,
+                        )
+            else:
+                # No conflict risk: restart just this agent
+                wip_path, prompt = pick_task(ws)
+                if prompt:
+                    print(f"Sending {name} to work...")
+                    running[name] = start_agent(
+                        name, prompt, ws, model, done_q,
+                    )
+
+            if not running:
+                break
+    except KeyboardInterrupt:
+        cleanup()
+
+    stop_event.set()
+    unlock(ws)
+    do_am(ws, push=True)
+
+
+def cmd_sh(args):
+    os.execvp("docker", ["docker", "sandbox", "exec", "-it", args.name, "bash"])
+
+
+def cmd_ls(args):
+    subprocess.run(["docker", "sandbox", "ls"])
+
+
+def cmd_fire(args):
+    subprocess.run(["docker", "sandbox", "rm", args.name], check=True)
+
+
+def do_am(ws: Path, push: bool = False):
+    """Apply patches from merge-queue/. Used by cmd_am and whip."""
+    mq = ws / "merge-queue"
+    patches = sorted(mq.rglob("*.patch"))
+    if not patches:
+        print("No patches in merge-queue/.")
+        return
+
+    applied_repos = set()
+    for patch in patches:
+        repo = patch.parent.name
+        target = ws / "repos" / repo
+        if not (target / ".git").is_dir():
+            print(f"  Warning: {target} is not a git repo, skipping.")
+            continue
+        subject = extract_subject(patch)
+        print(f"  Applying {patch.name} to {repo}...")
+        result = subprocess.run(
+            ["git", "am", str(patch)], cwd=target,
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            subprocess.run(
+                ["git", "am", "--abort"], cwd=target, capture_output=True,
+            )
+            # Create a fix todo
+            todos_dir = ws / "todos"
+            todos_dir.mkdir(exist_ok=True)
+            fix_name = f"fix-{patch.stem}.txt"
+            (todos_dir / fix_name).write_text(
+                f"Repo: {repo}\n"
+                f"The following patch failed to apply. "
+                f"Rebase and resubmit.\n"
+                f"Original: {patch.name}\n"
+                f"Subject: {subject}\n"
+            )
+            patch.unlink()
+            print(f"  FAILED. Created todos/{fix_name}")
+            continue
+        applied_repos.add(repo)
+        patch.unlink()
+        # Clean empty dirs
+        try:
+            patch.parent.rmdir()
+        except OSError:
+            pass
+
+    # Clean wip files for completed work
+    wip_dir = ws / "wip"
+    if wip_dir.is_dir():
+        for f in wip_dir.glob("*.txt"):
+            f.unlink()
+
+    if push:
+        for repo in sorted(applied_repos):
+            print(f"  Pushing {repo}...")
+            subprocess.run(
+                ["git", "push", "origin", "main"],
+                cwd=ws / "repos" / repo, check=True,
+            )
+
+    print("Done.")
+
+
+def cmd_am(args):
+    ws = workspace()
+    do_am(ws, push=args.push)
+
+
+def cmd_status(args):
+    ws = workspace()
+
+    print("=== Agents ===")
+    try:
+        subprocess.run(["docker", "sandbox", "ls"], timeout=10)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        print("  (docker not available)")
+    print()
+
+    print("=== Todos ===")
+    todos_dir = ws / "todos"
+    todo_found = False
+    if todos_dir.is_dir():
+        for f in sorted(todos_dir.glob("*.txt")):
+            todo_found = True
+            first_line = f.read_text().strip().split("\n")[0]
+            print(f"  {f.name}: {first_line}")
+    if not todo_found:
+        print("  (none)")
+    print()
+
+    print("=== Work In Progress ===")
+    wip_dir = ws / "wip"
+    wip_found = False
+    if wip_dir.is_dir():
+        for f in sorted(wip_dir.glob("*.txt")):
+            wip_found = True
+            first_line = f.read_text().strip().split("\n")[0]
+            print(f"  {f.name}: {first_line}")
+        # Also check for old .wip files
+        for f in sorted(wip_dir.glob("*.wip")):
+            wip_found = True
+            print(f"  {f.read_text().strip()}")
+    if not wip_found:
+        print("  (none)")
+    print()
+
+    print("=== Merge Queue ===")
+    mq = ws / "merge-queue"
+    patch_found = False
+    if mq.is_dir():
+        for repo_dir in sorted(mq.iterdir()):
+            if not repo_dir.is_dir():
+                continue
+            for patch in sorted(repo_dir.glob("*.patch")):
+                patch_found = True
+                subject = extract_subject(patch)
+                print(f"  {repo_dir.name}: {subject}")
+    if not patch_found:
+        print("  (none)")
+
+
+def cmd_lock(args):
+    ws = workspace()
+    repos_dir = ws / "repos"
+    subprocess.run(["chmod", "-R", "a-w", str(repos_dir)], check=True)
+    print(f"Locked {repos_dir} (read-only).")
+
+
+def cmd_unlock(args):
+    ws = workspace()
+    repos_dir = ws / "repos"
+    subprocess.run(["chmod", "-R", "u+w", str(repos_dir)], check=True)
+    print(f"Unlocked {repos_dir} (writable).")
+
+
+def cmd_reset(args):
+    ws = workspace()
+    wip_dir = ws / "wip"
+    mq_dir = ws / "merge-queue"
+    todos_dir = ws / "todos"
+
+    def count_files(d):
+        if not d.is_dir():
+            return 0
+        return sum(
+            1 for f in d.rglob("*")
+            if f.is_file() and f.name != ".DS_Store"
+        )
+
+    wip_count = count_files(wip_dir)
+    mq_count = count_files(mq_dir)
+    todos_count = count_files(todos_dir)
+
+    print("This will delete:")
+    print(f"  {wip_count} file(s) in {wip_dir}")
+    print(f"  {mq_count} file(s) in {mq_dir}")
+    print(f"  {todos_count} file(s) in {todos_dir}")
+    answer = input("Continue? [y/N] ")
+    if answer.strip().lower() != "y":
+        print("Aborted.")
+        sys.exit(1)
+
+    for d in [wip_dir, todos_dir]:
+        if d.is_dir():
+            for f in d.iterdir():
+                if f.is_file() and f.name != ".DS_Store":
+                    f.unlink()
+
+    if mq_dir.is_dir():
+        for f in mq_dir.rglob("*"):
+            if f.is_file() and f.name != ".DS_Store":
+                f.unlink()
+        # Clean empty subdirs
+        for d in sorted(mq_dir.rglob("*"), reverse=True):
+            if d.is_dir():
+                try:
+                    d.rmdir()
+                except OSError:
+                    pass
+
+    print("Done.")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="mickey",
+        description="AI agent orchestrator",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
 Commands:
-  hire  <name>                               Create agent and auth (interactive)
-  whip  [--model <model>] [-j N] [prompts]   Send agents to work (Ctrl-C to stop)
-  sh    <name>                               Shell into agent
-  ls                                         List agents
-  fire  <name>                               Remove agent
-  am    [--push]                             Verify and apply patches from merge-queue/
-  status                                     Show wip claims, queued patches, and agents
-  lock                                       Make repos/ read-only
-  unlock                                     Restore repos/ write permissions
-  reset                                      Clear wip/ and merge-queue/ (with confirmation)
-USAGE
-  exit 1
-}
+  hire  <name>                             Create agent (interactive)
+  whip  [--model <m>] [-j N] [prompts]    Send agents to work
+  sh    <name>                             Shell into agent
+  ls                                       List agents
+  fire  <name>                             Remove agent
+  am    [--push]                           Apply patches from merge-queue/
+  status                                   Show todos, wip, queued patches
+  lock                                     Make repos/ read-only
+  unlock                                   Restore repos/ write permissions
+  reset                                    Clear wip/, todos/, merge-queue/
+""",
+    )
+    sub = parser.add_subparsers(dest="command")
 
-[[ $# -eq 0 ]] && usage
+    p_hire = sub.add_parser("hire", help="Create agent")
+    p_hire.add_argument("name")
+    p_hire.set_defaults(func=cmd_hire)
 
-cmd=$1; shift
+    p_whip = sub.add_parser("whip", help="Send agents to work")
+    p_whip.add_argument("--model", default=None)
+    p_whip.add_argument("-j", type=int, default=None)
+    p_whip.add_argument("prompts", nargs="*")
+    p_whip.set_defaults(func=cmd_whip)
 
-case "$cmd" in
-  hire)
-    [[ $# -lt 1 ]] && { echo "Usage: mickey hire <name>"; exit 1; }
-    docker sandbox create --name "$1" claude ~/src
-    docker sandbox run "$1"
-    ;;
-  whip)
-    model=""
-    if [[ "${1:-}" == "--model" ]]; then
-      [[ $# -lt 2 ]] && { echo "Usage: mickey whip [--model <model>] [-j N] [prompts...]"; exit 1; }
-      shift; model="$1"; shift
-    fi
+    p_sh = sub.add_parser("sh", help="Shell into agent")
+    p_sh.add_argument("name")
+    p_sh.set_defaults(func=cmd_sh)
 
-    # Determine mode and collect prompts
-    prompts=()
-    agent_count=0
+    p_ls = sub.add_parser("ls", help="List agents")
+    p_ls.set_defaults(func=cmd_ls)
 
-    if [[ "${1:-}" == "-j" ]]; then
-      [[ $# -lt 2 ]] && { echo "Usage: mickey whip [--model <model>] -j <N> [prompts...]"; exit 1; }
-      shift; agent_count=$1; shift
-      [[ "$agent_count" =~ ^[1-9][0-9]*$ ]] || { echo "Error: -j requires a positive integer, got '$agent_count'." >&2; exit 1; }
-      prompts=("$@")
-    elif [[ $# -gt 0 ]]; then
-      IFS=':' read -ra prompts <<< "$*"
-      agent_count=${#prompts[@]}
-    fi
+    p_fire = sub.add_parser("fire", help="Remove agent")
+    p_fire.add_argument("name")
+    p_fire.set_defaults(func=cmd_fire)
 
-    # Get available agents
-    all_names=()
-    while IFS= read -r n; do all_names+=("$n"); done < <(docker sandbox ls | awk 'NR>1 {print $1}')
-    [[ ${#all_names[@]} -eq 0 ]] && { echo "No agents found. Hire some first: mickey hire <name>"; exit 0; }
+    p_am = sub.add_parser("am", help="Apply patches from merge-queue/")
+    p_am.add_argument("--push", action="store_true")
+    p_am.set_defaults(func=cmd_am)
 
-    if [[ $agent_count -gt 0 ]]; then
-      [[ ${#all_names[@]} -lt $agent_count ]] && { echo "Requested $agent_count agents but only ${#all_names[@]} available." >&2; exit 1; }
-      selected=("${all_names[@]:0:$agent_count}")
-    else
-      selected=("${all_names[@]}")
-    fi
+    p_status = sub.add_parser("status", help="Show status")
+    p_status.set_defaults(func=cmd_status)
 
-    # Color palette for distinguishing agents (ANSI color codes)
-    colors=(36 32 33 35 34 31)  # cyan, green, yellow, magenta, blue, red
+    p_lock = sub.add_parser("lock", help="Make repos/ read-only")
+    p_lock.set_defaults(func=cmd_lock)
 
-    ws="${WORKSPACE_DIR:-$HOME/src}"
-    wip_dir="$ws/wip"
-    queue_dir="$ws/merge-queue"
+    p_unlock = sub.add_parser("unlock", help="Restore repos/ permissions")
+    p_unlock.set_defaults(func=cmd_unlock)
 
-    stop_all() {
-      kill 0
-      for n in "${selected[@]}"; do docker sandbox stop "$n" 2>/dev/null & done
-      wait
-    }
-    trap 'stop_all; exit 0' INT TERM EXIT
+    p_reset = sub.add_parser("reset", help="Clear wip/, todos/, merge-queue/")
+    p_reset.set_defaults(func=cmd_reset)
 
-    # Background activity watcher: prints when agents claim TODOs or submit patches
-    (
-      prev_wip=$(ls "$wip_dir"/*.wip 2>/dev/null | sort || true)
-      prev_patches=$(find "$queue_dir" -name '*.patch' -type f 2>/dev/null | sort || true)
-      while true; do
-        sleep 10
-        cur_wip=$(ls "$wip_dir"/*.wip 2>/dev/null | sort || true)
-        if [[ "$cur_wip" != "$prev_wip" ]]; then
-          # Find new wip files
-          while IFS= read -r f; do
-            [[ -z "$f" ]] && continue
-            echo ">>> CLAIMED: $(cat "$f")"
-          done < <(comm -13 <(echo "$prev_wip") <(echo "$cur_wip"))
-          # Report cleared wip files
-          while IFS= read -r f; do
-            [[ -z "$f" ]] && continue
-            echo ">>> DONE: $(basename "$f" .wip)"
-          done < <(comm -23 <(echo "$prev_wip") <(echo "$cur_wip"))
-          prev_wip="$cur_wip"
-        fi
-        cur_patches=$(find "$queue_dir" -name '*.patch' -type f 2>/dev/null | sort || true)
-        if [[ "$cur_patches" != "$prev_patches" ]]; then
-          while IFS= read -r f; do
-            [[ -z "$f" ]] && continue
-            repo=$(basename "$(dirname "$f")")
-            subject=$(head -10 "$f" | grep '^Subject:' | sed 's/^Subject: \[PATCH[^]]*\] //')
-            echo ">>> PATCH: $repo — $subject"
-          done < <(comm -13 <(echo "$prev_patches") <(echo "$cur_patches"))
-          prev_patches="$cur_patches"
-        fi
-      done
-    ) &
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
 
-    for i in "${!selected[@]}"; do
-      name="${selected[$i]}"
-      color="${colors[$((i % ${#colors[@]}))]}"
+    # Validate whip -j
+    if args.command == "whip" and args.j is not None and args.j < 1:
+        print("Error: -j requires a positive integer.", file=sys.stderr)
+        sys.exit(1)
 
-      if [[ $i -lt ${#prompts[@]} ]] && [[ -n "${prompts[$i]}" ]]; then
-        agent_prompt="${prompts[$i]}"
-      else
-        agent_prompt="$DEFAULT_PROMPT"
-      fi
+    args.func(args)
 
-      (
-        trap 'kill %% 2>/dev/null; exit 0' INT TERM
-        while true; do
-          if [[ -n "$model" ]]; then
-            echo "Sending $name to work ($model)..."
-            ANTHROPIC_MODEL="$model" docker sandbox run "$name" -- \
-              --append-system-prompt "$AGENT_RULES" -p "$agent_prompt" &
-          else
-            echo "Sending $name to work..."
-            docker sandbox run "$name" -- \
-              --append-system-prompt "$AGENT_RULES" -p "$agent_prompt" &
-          fi
-          wait $!
-          exit_code=$?
-          if [[ $exit_code -eq 1 ]]; then
-            echo "$name exited with code 1 (credits exhausted?). Waiting 5 minutes before retry..." >&2
-            sleep 300 &
-            wait $!
-          fi
-        done
-      ) 2>&1 | awk -v name="$name" -v color="$color" \
-        '{printf "\033[" color "m[" name "]\033[0m %s\n", $0; fflush()}' &
-    done
-    wait
-    ;;
-  sh)
-    [[ $# -lt 1 ]] && { echo "Usage: mickey sh <name>"; exit 1; }
-    docker sandbox exec -it "$1" bash
-    ;;
-  ls)
-    docker sandbox ls
-    ;;
-  fire)
-    [[ $# -lt 1 ]] && { echo "Usage: mickey fire <name>"; exit 1; }
-    docker sandbox rm "$1"
-    ;;
-  am)
-    push=false
-    if [[ "${1:-}" == "--push" ]]; then
-      push=true; shift
-    fi
-    ws="${WORKSPACE_DIR:-$HOME/src}"
-    repos_dir="$ws/repos"
-    queue_dir="$ws/merge-queue"
 
-    # Check merge-queue has patches
-    patch_count=$(find "$queue_dir" -name '*.patch' -type f 2>/dev/null | wc -l | tr -d ' ')
-    if [[ "$patch_count" -eq 0 ]]; then
-      echo "No patches in $queue_dir."
-      exit 0
-    fi
-
-    # Step 1: Launch agent to verify and fix all patches
-    echo "Verifying $patch_count patch(es)..."
-    verify_prompt="Your goal: ensure every .patch file in $queue_dir applies cleanly AND contains no personal information. Do NOT stop until all patches pass both checks.
-
-For each subdirectory in $queue_dir/, the directory name is a repo name.
-
-## Part 1: Patch application
-
-For each repo:
-  1. Clone or update: cd ~/work/<repo> (clone from $repos_dir/<repo> if needed, or git checkout main && git pull)
-  2. Try each .patch file (sorted by name): git am --check <patch-file>
-  3. If a patch fails:
-     - Diagnose the conflict (check what changed in main since the patch was created)
-     - Apply the patch with git am in a temporary branch, resolve conflicts manually
-     - Regenerate a clean patch: git format-patch main --stdout > <same-patch-path>
-     - Reset to main and verify the new patch: git checkout main && git am --check <patch-file>
-     - Repeat until it applies cleanly
-  4. If a patch is truly unfixable (e.g. the entire feature was already landed), delete it from $queue_dir
-
-## Part 2: Personal information scan
-
-After all patches apply cleanly, review each patch for personal information leaks.
-
-**IMPORTANT**: Go beyond simple pattern matching. Use semantic understanding to identify PII that regular expressions would miss. Read the full diff content (added lines) of every patch, understand the context, and flag any of the following:
-
-### Direct identifiers
-- **Real names** of people (in comments, test data, variable values, commit messages beyond the author line)
-- **Real email addresses** that appear to belong to actual people (not placeholder/test addresses like user@example.com)
-- **Phone numbers** in any format (international, local, with/without separators)
-- **Physical addresses** (street addresses, postal codes tied to specific locations)
-- **Government IDs** (SSN, national ID numbers, passport numbers, tax IDs)
-- **Usernames, account IDs, or session tokens** that could identify real users
-
-### Sensitive personal data
-- **Dates of birth** or ages tied to identifiable individuals
-- **Financial information** (bank account numbers, credit card numbers, salary figures tied to individuals)
-- **Health or biometric data** tied to identifiable individuals
-- **Conversation logs or chat transcripts** containing real user messages
-
-### Contextual PII (requires semantic understanding, not just regex)
-- **Internal hostnames, server names, or IP addresses** that reveal infrastructure details
-- **File paths containing real usernames** (e.g., /Users/jsmith/ or /home/jdoe/) — even when embedded in error messages, stack traces, or config values
-- **Organizational details** that could identify individuals (specific team names, office locations, employee IDs, internal project codenames)
-- **Behavioral data** (browsing history, search queries, purchase history, location check-ins) tied to identifiable people
-- **Composite identification** — combinations of seemingly innocuous data that together identify a person (e.g., job title + city + employer, or age + profession + neighborhood)
-- **Screenshots, logs, or debug output** that incidentally contain real user data
-- **Hardcoded personal data** in test fixtures, seed files, or example configs that looks like it belongs to a real person rather than being clearly fictional
-- **Copy-pasted terminal output** containing prompts with usernames, paths, or environment variables that reveal identity
-
-### How to evaluate
-Use your judgment and contextual reasoning — not just pattern matching. Ask yourself:
-- Does this data point look like it belongs to a real person, or is it clearly synthetic/fictional?
-- Could combining multiple data points in this patch identify someone?
-- Is this an internal detail (hostname, path, project name) that was accidentally included?
-
-Obviously fictional data (John Doe, 123 Fake Street, 555-0100) is fine. Data that looks like it could belong to a real person is not. When in doubt, flag it.
-
-If you find PII in a patch:
-  1. Print a clear warning identifying the patch file and the problematic content
-  2. DELETE the patch from $queue_dir (do not attempt to fix it — the agent should redo it)
-
-When finished: every remaining patch in $queue_dir must pass git am --check AND be free of personal information. Do a final pass to confirm both."
-
-    agent=$(docker sandbox ls | awk 'NR>1 {print $1; exit}')
-    if [[ -z "$agent" ]]; then
-      echo "No agents available. Hire one first: mickey hire <name>" >&2
-      exit 1
-    fi
-
-    verify_exit=0
-    ANTHROPIC_MODEL="claude-sonnet-4-6" docker sandbox run "$agent" -- \
-      --append-system-prompt "$AGENT_RULES" -p "$verify_prompt" || verify_exit=$?
-
-    if [[ $verify_exit -ne 0 ]]; then
-      echo "Verification failed (agent exited $verify_exit). Patches NOT applied." >&2
-      exit 1
-    fi
-
-    # Step 2: Apply patches in chronological order (by filename timestamp)
-    echo "Applying patches..."
-    applied_repos=()
-    applied_summaries=()
-    while IFS= read -r patch_file; do
-      repo_dir=$(dirname "$patch_file")
-      repo=$(basename "$repo_dir")
-      target="$repos_dir/$repo"
-      if [[ ! -d "$target/.git" ]]; then
-        echo "Warning: $target is not a git repo, skipping." >&2
-        continue
-      fi
-      subject=$(head -10 "$patch_file" | grep '^Subject:' | sed 's/^Subject: \[PATCH[^]]*\] //')
-      echo "  Applying $(basename "$patch_file") to $repo..."
-      (cd "$target" && git am "$patch_file") || {
-        echo "FAILED to apply $(basename "$patch_file") to $repo. Aborting." >&2
-        (cd "$target" && git am --abort 2>/dev/null || true)
-        exit 1
-      }
-      applied_summaries+=("$repo: $subject")
-      rm "$patch_file"
-      case " ${applied_repos[*]:-} " in
-        *" $repo "*) ;;
-        *) applied_repos+=("$repo") ;;
-      esac
-      # Clean up empty merge-queue repo directory
-      rmdir "$repo_dir" 2>/dev/null && echo "  Cleaned up empty $queue_dir/$repo/"
-    done < <(find "$queue_dir" -name '*.patch' -type f | while IFS= read -r f; do echo "$(basename "$f") $f"; done | sort | cut -d' ' -f2-)
-    echo "All patches applied."
-
-    # Step 3: Update workspace TODO.md if patches addressed any items
-    todo_file="$ws/TODO.md"
-    if [[ -f "$todo_file" ]] && [[ ${#applied_summaries[@]} -gt 0 ]]; then
-      summary_list=""
-      for s in "${applied_summaries[@]}"; do
-        summary_list+="- $s"$'\n'
-      done
-
-      update_prompt="Your task: Update the workspace-wide TODO file at $todo_file to remove items addressed by recently applied patches.
-
-These patches were just applied:
-${summary_list}
-Read $todo_file. For each item, decide whether one of the applied patches clearly addresses it. If so, remove that item. If in doubt, keep it.
-
-Rules:
-- Only remove items clearly addressed by the patches above.
-- Do NOT add new items or rewrite existing ones.
-- Do NOT change formatting or structure beyond removing addressed lines.
-- Remove blank lines left behind when items are removed (keep the file tidy).
-- If no items are addressed, do nothing and say so."
-
-      echo "Updating workspace TODO.md..."
-      ANTHROPIC_MODEL="claude-haiku-4-5-20251001" docker sandbox run "$agent" -- \
-        --append-system-prompt "$AGENT_RULES" -p "$update_prompt" || \
-        echo "Warning: TODO.md update agent failed (non-fatal)." >&2
-    fi
-
-    # Step 4: Push if --push was given
-    if $push; then
-      echo "Pushing repos..."
-      for repo in "${applied_repos[@]}"; do
-        target="$repos_dir/$repo"
-        echo "  Pushing $repo main..."
-        (cd "$target" && git push origin main) || {
-          echo "FAILED to push $repo." >&2
-          exit 1
-        }
-      done
-      echo "All repos pushed."
-    fi
-    ;;
-  status)
-    ws="${WORKSPACE_DIR:-$HOME/src}"
-    wip_dir="$ws/wip"
-    queue_dir="$ws/merge-queue"
-
-    echo "=== Agents ==="
-    docker sandbox ls 2>/dev/null || echo "  (docker not available)"
-    echo ""
-
-    echo "=== Work In Progress ==="
-    wip_found=0
-    for f in "$wip_dir"/*.wip; do
-      [[ -f "$f" ]] || continue
-      wip_found=1
-      echo "  $(cat "$f")"
-    done
-    [[ $wip_found -eq 0 ]] && echo "  (none)"
-    echo ""
-
-    echo "=== Merge Queue ==="
-    patch_found=0
-    for repo_dir in "$queue_dir"/*/; do
-      [[ -d "$repo_dir" ]] || continue
-      repo=$(basename "$repo_dir")
-      for patch_file in "$repo_dir"*.patch; do
-        [[ -f "$patch_file" ]] || continue
-        patch_found=1
-        subject=$(head -10 "$patch_file" | grep '^Subject:' | sed 's/^Subject: \[PATCH[^]]*\] //')
-        echo "  $repo: $subject"
-      done
-    done
-    [[ $patch_found -eq 0 ]] && echo "  (none)"
-    ;;
-  lock)
-    repos_dir="${WORKSPACE_DIR:-$HOME/src}/repos"
-    chmod -R a-w "$repos_dir"
-    echo "Locked $repos_dir (read-only)."
-    ;;
-  unlock)
-    repos_dir="${WORKSPACE_DIR:-$HOME/src}/repos"
-    chmod -R u+w "$repos_dir"
-    echo "Unlocked $repos_dir (writable)."
-    ;;
-  reset)
-    ws="${WORKSPACE_DIR:-$HOME/src}"
-    wip_dir="$ws/wip"
-    queue_dir="$ws/merge-queue"
-    wip_count=$(find "$wip_dir" -type f ! -name '.DS_Store' 2>/dev/null | wc -l | tr -d ' ')
-    queue_count=$(find "$queue_dir" -type f ! -name '.DS_Store' 2>/dev/null | wc -l | tr -d ' ')
-    echo "This will delete:"
-    echo "  $wip_count file(s) in $wip_dir"
-    echo "  $queue_count file(s) in $queue_dir"
-    printf "Continue? [y/N] "
-    read -r answer
-    [[ "$answer" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
-    find "$wip_dir" -type f ! -name '.DS_Store' -delete 2>/dev/null || true
-    find "$queue_dir" -type f ! -name '.DS_Store' -delete 2>/dev/null || true
-    find "$queue_dir" -mindepth 1 -type d -empty -delete 2>/dev/null || true
-    echo "Done."
-    ;;
-  *)
-    usage
-    ;;
-esac
+if __name__ == "__main__":
+    main()

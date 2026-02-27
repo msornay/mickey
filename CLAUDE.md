@@ -6,35 +6,54 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Mickey is a CLI for hiring AI agents that write code in isolated Docker sandboxes sharing `~/src/`. Agents produce `git format-patch` output after passing sanity tests (`make test`), submitting patches directly to a merge queue organized by repo.
 
-The entire CLI is a single bash script (`mickey`) wrapping `docker sandbox` commands.
+The entire CLI is a single Python script (`mickey`) wrapping `docker sandbox` commands.
 
 ## Architecture
 
-- **`mickey`** — Bash CLI. Maps commands to `docker sandbox` subcommands: `hire`→`create`, `whip`→`run` (all agents), `sh`→`exec`, `ls`→`ls`, `fire`→`rm`. Agent rules are inlined as a heredoc variable and injected via `--append-system-prompt`.
+- **`mickey`** — Python CLI (stdlib only, no dependencies). Maps commands to `docker sandbox` subcommands: `hire`→`create`, `whip`→`run` (all agents), `sh`→`exec`, `ls`→`ls`, `fire`→`rm`. Agent rules are inlined as a string constant and injected via `--append-system-prompt`.
+
+### Task model
+
+Tasks live as plain text files in `~/src/todos/`. Each `.txt` file is one task. The `whip` command picks tasks programmatically:
+- 90% of the time: pick a random file from `todos/`, move it to `wip/`, and assign its content as the agent's prompt.
+- 10% of the time: send an "implicit todo" — explore a random repo for improvements.
+
+```
+todos/foo.txt  →  whip picks, moves to wip/foo.txt  →  agent works  →  patch in merge-queue/
+                                                                            ↓
+                                                            mickey am applies patch
+                                                            → success: deletes wip/foo.txt
+                                                            → failure: creates todos/fix-foo.txt
+```
+
+### Conflict-aware whip
+
+`whip` keeps agents busy while monitoring merge-queue/ for conflict risk. When any repo accumulates >2 patches, whip joins all agents, runs `am --push` to flush the queue, then restarts.
 
 ### Patch workflow
 
 ```
 Agent writes code → make test → git format-patch → ~/src/merge-queue/<repo>/
-Human runs mickey am → verifies patches → applies with git am → optionally pushes
+Human runs mickey am → applies with git am → optionally pushes
 ```
 
-Agents claim TODOs by creating `.wip` lock files in `~/src/wip/`. TODOs are selected at random with a random delay to reduce collisions between agents.
+`mickey am` is pure Python/git — no Claude verification step. Failed patches create a fix todo in `todos/`.
 
 ### Workspace layout (inside sandboxes)
 
 | Path | Purpose |
 |------|---------|
-| `$WORKSPACE_DIR/` (`~/src/`) | Synced to host. Agents must NOT modify directly (except wip/merge-queue). |
+| `$WORKSPACE_DIR/` (`~/src/`) | Synced to host. Agents must NOT modify directly (except merge-queue/). |
 | `$WORKSPACE_DIR/repos/` | Git repos (read-only). Agents clone from here. |
 | `~/work/` | Local workspace. Agents clone repos here. |
-| `$WORKSPACE_DIR/wip/` | Work-in-progress lock files for TODO claims. |
+| `$WORKSPACE_DIR/todos/` | Task files. One `.txt` per task, picked by whip. |
+| `$WORKSPACE_DIR/wip/` | Tasks in progress (moved from todos/ by whip). |
 | `$WORKSPACE_DIR/merge-queue/<repo>/` | Merge queue organized by repo (patches ready for human to apply). |
 
 ## Testing
 
-Run the test suite with `./test_mickey`. Tests validate argument parsing, usage output, and script structure without requiring Docker.
+Run the test suite with `python3 test_mickey` (or `pytest test_mickey` if available). Tests validate argument parsing, usage output, script structure, and E2E behavior with temp workspaces. No Docker required.
 
 ## Making changes
 
-Agent rules are defined in the `AGENT_RULES` variable at the top of the `mickey` script and injected into each agent session via `--append-system-prompt`. To change agent behavior, edit the heredoc in `mickey` directly.
+Agent rules are defined in the `AGENT_RULES` constant at the top of the `mickey` script and injected into each agent session via `--append-system-prompt`. To change agent behavior, edit the string in `mickey` directly.

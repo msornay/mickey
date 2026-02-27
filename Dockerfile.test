@@ -2,6 +2,6 @@ FROM docker/sandbox-templates:claude-code
 USER root
 WORKDIR /app
 COPY mickey test_mickey ./
-RUN chmod +x mickey test_mickey && chown agent:agent mickey test_mickey
+RUN chmod +x mickey test_mickey && chown -R agent:agent /app
 USER agent
-CMD ["bash", "./test_mickey"]
+CMD ["python3", "test_mickey"]
