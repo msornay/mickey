@@ -14,9 +14,10 @@ The entire CLI is a single Python script (`mickey`) wrapping `docker sandbox` co
 
 ### Task model
 
-Tasks live as plain text files in `~/src/todos/`. Each `.txt` file is one task. The `whip` command picks tasks programmatically:
-- 90% of the time: pick a random file from `todos/`, move it to `wip/`, and assign its content as the agent's prompt.
-- 10% of the time: send an "implicit todo" — explore a random repo for improvements.
+Tasks live as plain text files in `~/src/todos/`. Each `.txt` file is one task. The `whip` command picks tasks programmatically with a 70/20/10 split:
+- 70% of the time: pick a random file from `todos/`, move it to `wip/`, and assign its content as the agent's prompt (developer mode).
+- 20% of the time: **QA tester** — pick a random repo and test it from a user's perspective. The QA agent reads only documentation (never source code), installs and tests the software, cleans up `~/work/` when done, and files bug reports as `.txt` files in `todos/`.
+- 10% of the time: **rules audit** — verify a random repo follows its CLAUDE.md conventions and fix violations (developer mode).
 
 ```
 todos/foo.txt  →  whip picks, moves to wip/foo.txt  →  agent works  →  patch in merge-queue/
@@ -56,4 +57,4 @@ Run the test suite with `python3 test_mickey` (or `pytest test_mickey` if availa
 
 ## Making changes
 
-Agent rules are defined in the `AGENT_RULES` constant at the top of the `mickey` script and injected into each agent session via `--append-system-prompt`. To change agent behavior, edit the string in `mickey` directly.
+Agent rules are defined in the `AGENT_RULES` (developer) and `QA_RULES` (QA tester) constants at the top of the `mickey` script and injected into each agent session via `--append-system-prompt`. Agents read `$WORKSPACE_DIR/CLAUDE.md` and the repo's own `CLAUDE.md` (if any) at the start of each run. To change agent behavior, edit the strings in `mickey` directly.

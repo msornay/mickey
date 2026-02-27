@@ -91,14 +91,34 @@ def test_agent_rules_deployment():
     assert "Deployment awareness" in src
 
 
-def test_agent_rules_implicit_todo():
+def test_agent_rules_claude_md():
     src = MICKEY.read_text()
-    assert "implicit todo" in src.lower()
+    assert "CLAUDE.md" in src
+
+
+def test_agent_rules_audit():
+    src = MICKEY.read_text()
+    assert "Rules audit" in src
 
 
 def test_agent_rules_receive_task():
     src = MICKEY.read_text()
     assert "Your task" in src
+
+
+# -- QA rules content --
+
+def test_qa_rules_in_source():
+    src = MICKEY.read_text()
+    assert "QA tester" in src
+    assert "documentation" in src
+    assert "bug report" in src.lower()
+    assert "NEVER read source code" in src
+
+
+def test_pick_task_has_qa_mode():
+    src = MICKEY.read_text()
+    assert '"qa"' in src
 
 
 # -- No old model references --
@@ -119,7 +139,7 @@ def test_pick_task_function():
     src = MICKEY.read_text()
     assert "pick_task" in src
     assert "todo" in src
-    assert "implicit" in src.lower()
+    assert "Rules audit" in src
 
 
 # -- Usage text --
@@ -207,7 +227,7 @@ def test_reset_confirmed():
         r = run([str(MICKEY), "reset"], input="y\n", env=env)
         assert not Path(f"{ws}/wip/test.txt").exists()
         assert not Path(f"{ws}/merge-queue/repo/test.patch").exists()
-        assert not Path(f"{ws}/todos/task.txt").exists()
+        assert Path(f"{ws}/todos/task.txt").exists()
 
 
 def test_reset_aborted():
@@ -216,27 +236,6 @@ def test_reset_aborted():
         Path(f"{ws}/wip/test.txt").write_text("task")
         r = run([str(MICKEY), "reset"], input="n\n", env=env)
         assert Path(f"{ws}/wip/test.txt").exists()
-
-
-def test_lock():
-    with tempfile.TemporaryDirectory() as ws:
-        env = make_workspace(ws)
-        os.makedirs(f"{ws}/repos/testrepo")
-        Path(f"{ws}/repos/testrepo/file.txt").write_text("content")
-        run([str(MICKEY), "lock"], env=env)
-        assert not os.access(f"{ws}/repos/testrepo/file.txt", os.W_OK)
-        # Cleanup: restore write so tempdir can be deleted
-        run([str(MICKEY), "unlock"], env=env)
-
-
-def test_unlock():
-    with tempfile.TemporaryDirectory() as ws:
-        env = make_workspace(ws)
-        os.makedirs(f"{ws}/repos/testrepo")
-        Path(f"{ws}/repos/testrepo/file.txt").write_text("content")
-        run([str(MICKEY), "lock"], env=env)
-        run([str(MICKEY), "unlock"], env=env)
-        assert os.access(f"{ws}/repos/testrepo/file.txt", os.W_OK)
 
 
 # -- am with real git repo --

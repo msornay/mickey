@@ -26,11 +26,13 @@ You are a developer agent working inside a Docker sandbox.
 ## Your task
 You receive a specific task as your prompt. Work on it directly.
 
-If your task says "implicit todo", explore the assigned repo for improvements:
-inline TODO/FIXME/HACK/XXX comments, missing tests, code quality issues, documentation.
-Exit cleanly without producing a patch if nothing needs work.
+If your task says "Rules audit", verify the repo follows its CLAUDE.md conventions and fix any violations.
+Exit cleanly without producing a patch if everything is in order.
 
 ## Starting work
+0. Read $WORKSPACE_DIR/CLAUDE.md for workspace-wide conventions. Then read the
+   repo's own CLAUDE.md (if it has one) for project-specific rules. Follow both
+   throughout your work.
 1. Clone: git clone $WORKSPACE_DIR/repos/<repo> ~/work/<repo>
    Or update: cd ~/work/<repo> && git checkout main && git pull $WORKSPACE_DIR/repos/<repo> main
 2. Apply pending patches from merge-queue: if $WORKSPACE_DIR/merge-queue/<repo>/ has .patch files, apply them to your local clone in sorted order:
@@ -68,11 +70,47 @@ Deploying code is done by a human, not by agents. When your work involves deploy
 - Make clean, atomic commits with good messages
 """
 
-DEFAULT_PROMPT = (
-    "Implicit todo: explore a random repo under $WORKSPACE_DIR/repos/. "
-    "Clone it and look for improvements (inline TODOs, missing tests, "
-    "code quality, documentation). Exit cleanly if nothing needs work."
-)
+QA_RULES = r"""# QA Tester Rules
+
+You are a QA tester, NOT a developer. Your job is to test software from a user's perspective.
+
+## Workspace layout
+- $WORKSPACE_DIR/repos/ contains git repos. You may ONLY read documentation files from here (README*, CLAUDE.md, docs/, Makefile help targets). Do NOT read source code.
+- $WORKSPACE_DIR/todos/ is where you file bug reports.
+
+## Your task
+You receive a repo to test. Your job:
+
+1. Read ONLY the documentation: README, CLAUDE.md, docs/, Makefile targets, CLI --help output.
+   Do NOT read source code files (.py, .js, .ts, .rs, .swift, .java, .sh, etc.).
+
+2. Clone the repo into ~/work/<repo> and follow the documented installation/setup instructions.
+   Clean up when done: remove ~/work/<repo> so the sandbox stays clean for the next run.
+
+3. Test every feature and workflow described in the documentation.
+   Try edge cases, wrong inputs, missing prerequisites.
+
+4. For each bug found, create a file in $WORKSPACE_DIR/todos/:
+   Filename: bug-<repo>-<short-description>.txt
+   Content:
+     Repo: <repo>
+     Bug: <short title>
+     Steps to reproduce:
+       1. ...
+       2. ...
+     Expected: ...
+     Actual: ...
+
+5. If everything works as documented, exit cleanly without creating any files.
+
+## Rules
+- NEVER read source code — only documentation and command output
+- NEVER produce patches or write code
+- NEVER modify anything under $WORKSPACE_DIR/repos/
+- NEVER enter plan mode
+- File bug reports ONLY for real bugs — not style preferences or feature requests
+- Clean up after yourself — remove ~/work/<repo> when done
+"""
 
 COLORS = ["31", "32", "33", "34", "35", "36"]  # red, green, yellow, blue, magenta, cyan
 _color_idx = 0
@@ -86,12 +124,15 @@ def workspace() -> Path:
 # --- Task selection ---
 
 def pick_task(ws: Path):
-    """Pick a task: 90% from todos/, 10% implicit todo on random repo.
+    """Pick a task: 70% from todos/, 20% QA tester, 10% rules audit.
 
-    Returns (wip_path_or_None, prompt_text). Returns (None, None) if nothing.
+    Returns (wip_path_or_None, prompt_text, agent_type).
+    Returns (None, None, None) when no task is available.
     """
-    # 10% chance: implicit todo
-    if random.randint(1, 10) == 1:
+    roll = random.randint(1, 10)
+
+    # 10% chance: rules audit (roll == 1)
+    if roll == 1:
         repos_dir = ws / "repos"
         if repos_dir.is_dir():
             repos = [
@@ -101,13 +142,35 @@ def pick_task(ws: Path):
             if repos:
                 repo = random.choice(repos)
                 return None, (
-                    f"Implicit todo: explore $WORKSPACE_DIR/repos/{repo}. "
-                    "Clone it and look for improvements (inline TODOs, "
-                    "missing tests, code quality, documentation). "
-                    "Exit cleanly if nothing needs work."
-                )
+                    f"Rules audit: clone $WORKSPACE_DIR/repos/{repo} "
+                    "into ~/work/{repo}. "
+                    "Read $WORKSPACE_DIR/CLAUDE.md and the repo's own "
+                    "CLAUDE.md (if any). "
+                    "Verify the repo follows the rules documented there. "
+                    "If you find violations, fix them and submit a patch. "
+                    "Exit cleanly if everything is in order."
+                ), "developer"
 
-    # 90% chance: pick from todos/
+    # 20% chance: QA tester (roll == 2 or 3)
+    if roll <= 3:
+        repos_dir = ws / "repos"
+        if repos_dir.is_dir():
+            repos = [
+                p.name for p in repos_dir.iterdir()
+                if p.is_dir() and not p.name.startswith(".")
+            ]
+            if repos:
+                repo = random.choice(repos)
+                return None, (
+                    f"QA test $WORKSPACE_DIR/repos/{repo}. "
+                    "Read only its documentation (README, CLAUDE.md, "
+                    "docs/, Makefile targets, --help output). "
+                    "Clone, install, and test every documented feature. "
+                    "File bug reports in $WORKSPACE_DIR/todos/ for any "
+                    "issues found. Clean up ~/work/ when done."
+                ), "qa"
+
+    # 70% chance: pick from todos/ (roll 4-10)
     todos_dir = ws / "todos"
     if todos_dir.is_dir():
         todos = list(todos_dir.glob("*.txt"))
@@ -118,25 +181,9 @@ def pick_task(ws: Path):
             dest = wip_dir / pick.name
             content = pick.read_text()
             pick.rename(dest)
-            return dest, content
+            return dest, content, "developer"
 
-    # Fallback: implicit todo
-    repos_dir = ws / "repos"
-    if repos_dir.is_dir():
-        repos = [
-            p.name for p in repos_dir.iterdir()
-            if p.is_dir() and not p.name.startswith(".")
-        ]
-        if repos:
-            repo = random.choice(repos)
-            return None, (
-                f"Implicit todo: explore $WORKSPACE_DIR/repos/{repo}. "
-                "Clone it and look for improvements (inline TODOs, "
-                "missing tests, code quality, documentation). "
-                "Exit cleanly if nothing needs work."
-            )
-
-    return None, None
+    return None, None, None
 
 
 def max_patches_per_repo(ws: Path) -> int:
@@ -180,17 +227,18 @@ def get_agents() -> list:
         return []
 
 
-def start_agent(name, prompt, ws, model, done_q):
+def start_agent(name, prompt, ws, model, done_q, agent_type="developer"):
     """Start an agent in a background thread. Returns the thread."""
     global _color_idx
     with _color_lock:
         color = COLORS[_color_idx % len(COLORS)]
         _color_idx += 1
+    rules = QA_RULES if agent_type == "qa" else AGENT_RULES
 
     def run():
         cmd = [
             "docker", "sandbox", "run", name, "--",
-            "--append-system-prompt", AGENT_RULES, "-p", prompt,
+            "--append-system-prompt", rules, "-p", prompt,
         ]
         env = dict(os.environ)
         if model:
@@ -367,15 +415,17 @@ def cmd_whip(args):
     for name in agents:
         if name in explicit_prompts:
             prompt = explicit_prompts[name]
-            wip_path = None
+            agent_type = "developer"
         else:
-            wip_path, prompt = pick_task(ws)
+            _, prompt, agent_type = pick_task(ws)
         if prompt:
             print(
                 f"Sending {name} to work"
                 f"{' (' + model + ')' if model else ''}...",
             )
-            running[name] = start_agent(name, prompt, ws, model, done_q)
+            running[name] = start_agent(
+                name, prompt, ws, model, done_q, agent_type,
+            )
 
     if not running:
         print("No tasks available.")
@@ -387,31 +437,22 @@ def cmd_whip(args):
             name = done_q.get()
             running.pop(name, None)
 
-            # Conflict risk: any repo has > 2 patches
             if max_patches_per_repo(ws) > 2:
-                # Wait for all remaining agents
                 for t in running.values():
                     t.join()
                 running.clear()
                 unlock(ws)
                 do_am(ws, push=True)
                 lock(ws)
-                # Restart ALL agents
-                for n in agents:
-                    wip_path, prompt = pick_task(ws)
+
+            for n in agents:
+                if n not in running:
+                    _, prompt, agent_type = pick_task(ws)
                     if prompt:
-                        print(f"Sending {n} to work (post-am)...")
+                        print(f"Sending {n} to work...")
                         running[n] = start_agent(
-                            n, prompt, ws, model, done_q,
+                            n, prompt, ws, model, done_q, agent_type,
                         )
-            else:
-                # No conflict risk: restart just this agent
-                wip_path, prompt = pick_task(ws)
-                if prompt:
-                    print(f"Sending {name} to work...")
-                    running[name] = start_agent(
-                        name, prompt, ws, model, done_q,
-                    )
 
             if not running:
                 break
@@ -557,25 +598,11 @@ def cmd_status(args):
         print("  (none)")
 
 
-def cmd_lock(args):
-    ws = workspace()
-    repos_dir = ws / "repos"
-    subprocess.run(["chmod", "-R", "a-w", str(repos_dir)], check=True)
-    print(f"Locked {repos_dir} (read-only).")
-
-
-def cmd_unlock(args):
-    ws = workspace()
-    repos_dir = ws / "repos"
-    subprocess.run(["chmod", "-R", "u+w", str(repos_dir)], check=True)
-    print(f"Unlocked {repos_dir} (writable).")
-
 
 def cmd_reset(args):
     ws = workspace()
     wip_dir = ws / "wip"
     mq_dir = ws / "merge-queue"
-    todos_dir = ws / "todos"
 
     def count_files(d):
         if not d.is_dir():
@@ -587,22 +614,19 @@ def cmd_reset(args):
 
     wip_count = count_files(wip_dir)
     mq_count = count_files(mq_dir)
-    todos_count = count_files(todos_dir)
 
     print("This will delete:")
     print(f"  {wip_count} file(s) in {wip_dir}")
     print(f"  {mq_count} file(s) in {mq_dir}")
-    print(f"  {todos_count} file(s) in {todos_dir}")
     answer = input("Continue? [y/N] ")
     if answer.strip().lower() != "y":
         print("Aborted.")
         sys.exit(1)
 
-    for d in [wip_dir, todos_dir]:
-        if d.is_dir():
-            for f in d.iterdir():
-                if f.is_file() and f.name != ".DS_Store":
-                    f.unlink()
+    if wip_dir.is_dir():
+        for f in wip_dir.iterdir():
+            if f.is_file() and f.name != ".DS_Store":
+                f.unlink()
 
     if mq_dir.is_dir():
         for f in mq_dir.rglob("*"):
@@ -633,9 +657,7 @@ Commands:
   fire  <name>                             Remove agent
   am    [--push]                           Apply patches from merge-queue/
   status                                   Show todos, wip, queued patches
-  lock                                     Make repos/ read-only
-  unlock                                   Restore repos/ write permissions
-  reset                                    Clear wip/, todos/, merge-queue/
+  reset                                    Clear wip/ and merge-queue/
 """,
     )
     sub = parser.add_subparsers(dest="command")
@@ -668,13 +690,7 @@ Commands:
     p_status = sub.add_parser("status", help="Show status")
     p_status.set_defaults(func=cmd_status)
 
-    p_lock = sub.add_parser("lock", help="Make repos/ read-only")
-    p_lock.set_defaults(func=cmd_lock)
-
-    p_unlock = sub.add_parser("unlock", help="Restore repos/ permissions")
-    p_unlock.set_defaults(func=cmd_unlock)
-
-    p_reset = sub.add_parser("reset", help="Clear wip/, todos/, merge-queue/")
+    p_reset = sub.add_parser("reset", help="Clear wip/ and merge-queue/")
     p_reset.set_defaults(func=cmd_reset)
 
     args = parser.parse_args()
