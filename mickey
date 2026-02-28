@@ -262,7 +262,7 @@ def start_agent(name, prompt, ws, model, agent_type="developer"):
             )
             prefix = f"[{name}]"
             for line in proc.stdout:
-                print(f"{prefix} {line}", end="", flush=True)
+                print(f"{prefix} {line.rstrip()}", flush=True)
             proc.wait()
         except Exception as e:
             print(f"[{name}] error: {e}", flush=True)
@@ -332,6 +332,7 @@ def cmd_whip(args):
     import time
 
     threads = {}
+    last_am = time.monotonic()
 
     # Lock repos
     lock(ws)
@@ -340,13 +341,16 @@ def cmd_whip(args):
 
     try:
         while True:
-            if max_patches_per_repo(ws) >= 2:
+            patches = max_patches_per_repo(ws)
+            stale = time.monotonic() - last_am > 900
+            if patches > 2 or (patches > 0 and stale):
                 for t in threads.values():
                     t.join()
                 threads.clear()
                 unlock(ws)
                 do_am(ws, push=True)
                 lock(ws)
+                last_am = time.monotonic()
 
             for n in agents:
                 if n in threads and threads[n].is_alive():
@@ -439,11 +443,14 @@ def do_am(ws: Path, push: bool = False):
     if push:
         for repo in sorted(applied_repos):
             print(f"pushing {repo}...")
-            subprocess.run(
-                ["git", "push", "origin", "main"],
+            r = subprocess.run(
+                ["git", "push"],
                 cwd=ws / "repos" / repo,
-                check=True,
+                capture_output=True,
+                text=True,
             )
+            if r.returncode != 0:
+                print(f"push failed for {repo}: {r.stderr.strip()}")
 
     print("done.")
 
