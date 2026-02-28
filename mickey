@@ -24,12 +24,13 @@ You are a developer agent working inside a Docker sandbox.
 ## Your task
 You receive a specific task as your prompt. Work on it directly.
 
-If your task says "Rules audit", verify the repo follows its CLAUDE.md conventions and fix any violations.
+If your task says "Rules audit", verify the repo follows its RULES.md conventions and fix any violations.
 Exit cleanly without producing a patch if everything is in order.
 
 ## Starting work
-0. Read $WORKSPACE_DIR/CLAUDE.md for workspace-wide conventions. Then read the
-   repo's own CLAUDE.md (if it has one) for project-specific rules. Follow both
+0. Read $WORKSPACE_DIR/CLAUDE.md and $WORKSPACE_DIR/RULES.md for workspace-wide
+   context and conventions. Then read the repo's own CLAUDE.md and RULES.md (if
+   they exist) for project-specific context and rules. Follow all of these
    throughout your work.
 1. Clone: git clone $WORKSPACE_DIR/repos/<repo> ~/work/<repo>
    Or update: cd ~/work/<repo> && git checkout main && git pull $WORKSPACE_DIR/repos/<repo> main
@@ -73,13 +74,13 @@ QA_RULES = r"""# QA Tester Rules
 You are a QA tester, NOT a developer. Your job is to test software from a user's perspective.
 
 ## Workspace layout
-- $WORKSPACE_DIR/repos/ contains git repos. You may ONLY read documentation files from here (README*, CLAUDE.md, docs/, Makefile help targets). Do NOT read source code.
+- $WORKSPACE_DIR/repos/ contains git repos. You may ONLY read documentation files from here (README*, CLAUDE.md, RULES.md, docs/, Makefile help targets). Do NOT read source code.
 - $WORKSPACE_DIR/todos/ is where you file bug reports.
 
 ## Your task
 You receive a repo to test. Your job:
 
-1. Read ONLY the documentation: README, CLAUDE.md, docs/, Makefile targets, CLI --help output.
+1. Read ONLY the documentation: README, CLAUDE.md, RULES.md, docs/, Makefile targets, CLI --help output.
    Do NOT read source code files (.py, .js, .ts, .rs, .swift, .java, .sh, etc.).
 
 2. Clone the repo into ~/work/<repo> and follow the documented installation/setup instructions.
@@ -142,8 +143,8 @@ def pick_task(ws: Path):
                     (
                         f"Rules audit: clone $WORKSPACE_DIR/repos/{repo} "
                         "into ~/work/{repo}. "
-                        "Read $WORKSPACE_DIR/CLAUDE.md and the repo's own "
-                        "CLAUDE.md (if any). "
+                        "Read $WORKSPACE_DIR/RULES.md and the repo's own "
+                        "RULES.md (if any). "
                         "Verify the repo follows the rules documented there. "
                         "If you find violations, fix them and submit a patch. "
                         "Exit cleanly if everything is in order."
@@ -167,7 +168,7 @@ def pick_task(ws: Path):
                     (
                         f"QA test $WORKSPACE_DIR/repos/{repo}. "
                         "Read only its documentation (README, CLAUDE.md, "
-                        "docs/, Makefile targets, --help output). "
+                        "RULES.md, docs/, Makefile targets, --help output). "
                         "Clone, install, and test every documented feature. "
                         "File bug reports in $WORKSPACE_DIR/todos/ for any "
                         "issues found. Clean up ~/work/ when done."
