@@ -559,18 +559,21 @@ def cmd_reset(args):
     wip_count = count_files(wip_dir)
     mq_count = count_files(mq_dir)
 
-    print("this will delete:")
-    print(f"  {wip_count} file(s) in {wip_dir}")
-    print(f"  {mq_count} file(s) in {mq_dir}")
+    todos_dir = ws / "todos"
+
+    print("this will:")
+    print(f"  move {wip_count} file(s) from {wip_dir} back to {todos_dir}")
+    print(f"  delete {mq_count} file(s) in {mq_dir}")
     answer = input("continue? [y/N] ")
     if answer.strip().lower() != "y":
         print("aborted.")
         sys.exit(1)
 
     if wip_dir.is_dir():
+        todos_dir.mkdir(exist_ok=True)
         for f in wip_dir.iterdir():
             if f.is_file() and f.name != ".DS_Store":
-                f.unlink()
+                f.rename(todos_dir / f.name)
 
     if mq_dir.is_dir():
         for f in mq_dir.rglob("*"):

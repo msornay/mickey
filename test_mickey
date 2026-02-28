@@ -143,13 +143,16 @@ def test_reset_confirmed():
     with tempfile.TemporaryDirectory() as ws:
         env = make_workspace(ws)
         os.makedirs(f"{ws}/merge-queue/repo", exist_ok=True)
-        Path(f"{ws}/wip/test.txt").write_text("task")
+        Path(f"{ws}/wip/test.txt").write_text("wip task")
         Path(f"{ws}/merge-queue/repo/test.patch").write_text("patch")
         Path(f"{ws}/todos/task.txt").write_text("todo")
         r = run([str(MICKEY), "reset"], input="y\n", env=env)
         assert not Path(f"{ws}/wip/test.txt").exists()
         assert not Path(f"{ws}/merge-queue/repo/test.patch").exists()
         assert Path(f"{ws}/todos/task.txt").exists()
+        # wip file moved back to todos
+        assert Path(f"{ws}/todos/test.txt").exists()
+        assert Path(f"{ws}/todos/test.txt").read_text() == "wip task"
 
 
 def test_reset_aborted():
