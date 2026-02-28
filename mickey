@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Mickey - AI agent orchestrator."""
+
 import argparse
-import glob
 import os
-import queue
 import random
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -112,16 +110,13 @@ You receive a repo to test. Your job:
 - Clean up after yourself — remove ~/work/<repo> when done
 """
 
-COLORS = ["31", "32", "33", "34", "35", "36"]  # red, green, yellow, blue, magenta, cyan
-_color_idx = 0
-_color_lock = threading.Lock()
-
 
 def workspace() -> Path:
     return Path(os.environ.get("WORKSPACE_DIR", Path.home() / "src"))
 
 
 # --- Task selection ---
+
 
 def pick_task(ws: Path):
     """Pick a task: 70% from todos/, 20% QA tester, 10% rules audit.
@@ -136,39 +131,49 @@ def pick_task(ws: Path):
         repos_dir = ws / "repos"
         if repos_dir.is_dir():
             repos = [
-                p.name for p in repos_dir.iterdir()
+                p.name
+                for p in repos_dir.iterdir()
                 if p.is_dir() and not p.name.startswith(".")
             ]
             if repos:
                 repo = random.choice(repos)
-                return None, (
-                    f"Rules audit: clone $WORKSPACE_DIR/repos/{repo} "
-                    "into ~/work/{repo}. "
-                    "Read $WORKSPACE_DIR/CLAUDE.md and the repo's own "
-                    "CLAUDE.md (if any). "
-                    "Verify the repo follows the rules documented there. "
-                    "If you find violations, fix them and submit a patch. "
-                    "Exit cleanly if everything is in order."
-                ), "developer"
+                return (
+                    None,
+                    (
+                        f"Rules audit: clone $WORKSPACE_DIR/repos/{repo} "
+                        "into ~/work/{repo}. "
+                        "Read $WORKSPACE_DIR/CLAUDE.md and the repo's own "
+                        "CLAUDE.md (if any). "
+                        "Verify the repo follows the rules documented there. "
+                        "If you find violations, fix them and submit a patch. "
+                        "Exit cleanly if everything is in order."
+                    ),
+                    "developer",
+                )
 
     # 20% chance: QA tester (roll == 2 or 3)
     if roll <= 3:
         repos_dir = ws / "repos"
         if repos_dir.is_dir():
             repos = [
-                p.name for p in repos_dir.iterdir()
+                p.name
+                for p in repos_dir.iterdir()
                 if p.is_dir() and not p.name.startswith(".")
             ]
             if repos:
                 repo = random.choice(repos)
-                return None, (
-                    f"QA test $WORKSPACE_DIR/repos/{repo}. "
-                    "Read only its documentation (README, CLAUDE.md, "
-                    "docs/, Makefile targets, --help output). "
-                    "Clone, install, and test every documented feature. "
-                    "File bug reports in $WORKSPACE_DIR/todos/ for any "
-                    "issues found. Clean up ~/work/ when done."
-                ), "qa"
+                return (
+                    None,
+                    (
+                        f"QA test $WORKSPACE_DIR/repos/{repo}. "
+                        "Read only its documentation (README, CLAUDE.md, "
+                        "docs/, Makefile targets, --help output). "
+                        "Clone, install, and test every documented feature. "
+                        "File bug reports in $WORKSPACE_DIR/todos/ for any "
+                        "issues found. Clean up ~/work/ when done."
+                    ),
+                    "qa",
+                )
 
     # 70% chance: pick from todos/ (roll 4-10)
     todos_dir = ws / "todos"
@@ -204,9 +209,7 @@ def extract_subject(patch: Path) -> str:
         with open(patch) as f:
             for line in f:
                 if line.startswith("Subject:"):
-                    return re.sub(
-                        r"^Subject:\s*\[PATCH[^\]]*\]\s*", "", line
-                    ).strip()
+                    return re.sub(r"^Subject:\s*\[PATCH[^\]]*\]\s*", "", line).strip()
     except OSError:
         pass
     return "(unknown)"
@@ -214,12 +217,15 @@ def extract_subject(patch: Path) -> str:
 
 # --- Agent management ---
 
+
 def get_agents() -> list:
     """List available agent names from docker sandbox ls."""
     try:
         r = subprocess.run(
             ["docker", "sandbox", "ls"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         lines = r.stdout.strip().splitlines()
         return [line.split()[0] for line in lines[1:] if line.strip()]
@@ -227,28 +233,34 @@ def get_agents() -> list:
         return []
 
 
-def start_agent(name, prompt, ws, model, done_q, agent_type="developer"):
+def start_agent(name, prompt, ws, model, agent_type="developer"):
     """Start an agent in a background thread. Returns the thread."""
-    global _color_idx
-    with _color_lock:
-        color = COLORS[_color_idx % len(COLORS)]
-        _color_idx += 1
     rules = QA_RULES if agent_type == "qa" else AGENT_RULES
 
     def run():
         cmd = [
-            "docker", "sandbox", "run", name, "--",
-            "--append-system-prompt", rules, "-p", prompt,
+            "docker",
+            "sandbox",
+            "run",
+            name,
+            "--",
+            "--append-system-prompt",
+            rules,
+            "-p",
+            prompt,
         ]
         env = dict(os.environ)
         if model:
             env["ANTHROPIC_MODEL"] = model
         try:
             proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, env=env,
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=env,
             )
-            prefix = f"\033[{color}m[{name}]\033[0m"
+            prefix = f"[{name}]"
             for line in proc.stdout:
                 print(f"{prefix} {line}", end="", flush=True)
             proc.wait()
@@ -259,11 +271,10 @@ def start_agent(name, prompt, ws, model, done_q, agent_type="developer"):
                     flush=True,
                 )
                 import time
+
                 time.sleep(300)
         except Exception as e:
-            print(f"\033[{color}m[{name}]\033[0m Error: {e}", flush=True)
-        finally:
-            done_q.put(name)
+            print(f"[{name}] Error: {e}", flush=True)
 
     t = threading.Thread(target=run, daemon=True, name=name)
     t.start()
@@ -272,9 +283,11 @@ def start_agent(name, prompt, ws, model, done_q, agent_type="developer"):
 
 # --- Activity watcher ---
 
-def activity_watcher(ws: Path, stop_event: threading.Event):
+
+def activity_watcher(ws: Path):
     """Daemon thread that monitors wip/ and merge-queue/ for changes."""
     import time
+
     wip_dir = ws / "wip"
     mq_dir = ws / "merge-queue"
 
@@ -291,10 +304,8 @@ def activity_watcher(ws: Path, stop_event: threading.Event):
     prev_wip = snapshot_wip()
     prev_patches = snapshot_patches()
 
-    while not stop_event.is_set():
-        stop_event.wait(10)
-        if stop_event.is_set():
-            break
+    while True:
+        time.sleep(10)
 
         cur_wip = snapshot_wip()
         for f in cur_wip - prev_wip:
@@ -317,6 +328,7 @@ def activity_watcher(ws: Path, stop_event: threading.Event):
 
 # --- Lock/unlock helpers ---
 
+
 def lock(ws: Path):
     repos_dir = ws / "repos"
     if repos_dir.is_dir():
@@ -337,11 +349,11 @@ def unlock(ws: Path):
 
 # --- Commands ---
 
+
 def cmd_hire(args):
     name = args.name
     subprocess.run(
-        ["docker", "sandbox", "create", "--name", name, "claude",
-         str(workspace())],
+        ["docker", "sandbox", "create", "--name", name, "claude", str(workspace())],
         check=True,
     )
     subprocess.run(["docker", "sandbox", "run", name], check=True)
@@ -363,105 +375,58 @@ def cmd_whip(args):
             sys.exit(1)
         if len(all_agents) < args.j:
             print(
-                f"Requested {args.j} agents but only "
-                f"{len(all_agents)} available.",
+                f"Requested {args.j} agents but only {len(all_agents)} available.",
                 file=sys.stderr,
             )
             sys.exit(1)
-        agents = all_agents[:args.j]
+        agents = all_agents[: args.j]
     else:
         agents = all_agents
 
-    # Parse explicit prompts (colon-separated if provided)
-    explicit_prompts = {}
-    if args.prompts:
-        parts = ":".join(args.prompts).split(":")
-        for i, prompt in enumerate(parts):
-            if i < len(agents) and prompt.strip():
-                explicit_prompts[agents[i]] = prompt.strip()
+    import time
 
-    done_q = queue.Queue()
-    running = {}
-    stop_event = threading.Event()
-    procs = []
+    threads = {}
 
     # Lock repos
     lock(ws)
 
     # Start activity watcher
     watcher = threading.Thread(
-        target=activity_watcher, args=(ws, stop_event), daemon=True,
+        target=activity_watcher,
+        args=(ws,),
+        daemon=True,
     )
     watcher.start()
 
-    def cleanup(signum=None, frame=None):
-        stop_event.set()
-        # Stop all docker sandbox agents
-        for name in list(running):
-            try:
-                subprocess.run(
-                    ["docker", "sandbox", "stop", name],
-                    capture_output=True, timeout=5,
-                )
-            except Exception:
-                pass
-        unlock(ws)
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, cleanup)
-    signal.signal(signal.SIGTERM, cleanup)
-
-    # Start all agents with initial tasks
-    for name in agents:
-        if name in explicit_prompts:
-            prompt = explicit_prompts[name]
-            agent_type = "developer"
-        else:
-            _, prompt, agent_type = pick_task(ws)
-        if prompt:
-            print(
-                f"Sending {name} to work"
-                f"{' (' + model + ')' if model else ''}...",
-            )
-            running[name] = start_agent(
-                name, prompt, ws, model, done_q, agent_type,
-            )
-
-    if not running:
-        print("No tasks available.")
-        unlock(ws)
-        return
+    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
 
     try:
         while True:
-            name = done_q.get()
-            running.pop(name, None)
-
-            if max_patches_per_repo(ws) > 2:
-                for t in running.values():
+            if max_patches_per_repo(ws) >= 2:
+                for t in threads.values():
                     t.join()
-                running.clear()
+                threads.clear()
                 unlock(ws)
                 do_am(ws, push=True)
                 lock(ws)
 
             for n in agents:
-                if n not in running:
-                    _, prompt, agent_type = pick_task(ws)
-                    if prompt:
-                        print(f"Sending {n} to work...")
-                        running[n] = start_agent(
-                            n, prompt, ws, model, done_q, agent_type,
-                        )
+                if n in threads and threads[n].is_alive():
+                    continue
+                _, prompt, agent_type = pick_task(ws)
+                if prompt:
+                    print(f"Sending {n} to work...")
+                    threads[n] = start_agent(
+                        n,
+                        prompt,
+                        ws,
+                        model,
+                        agent_type,
+                    )
 
-            if not running:
-                break
-    except KeyboardInterrupt:
-        cleanup()
-
-    stop_event.set()
-    unlock(ws)
-    do_am(ws, push=True)
+            time.sleep(25)
+    finally:
+        unlock(ws)
 
 
 def cmd_sh(args):
@@ -489,17 +454,21 @@ def do_am(ws: Path, push: bool = False):
         repo = patch.parent.name
         target = ws / "repos" / repo
         if not (target / ".git").is_dir():
-            print(f"  Warning: {target} is not a git repo, skipping.")
+            print(f"Warning: {target} is not a git repo, skipping.")
             continue
         subject = extract_subject(patch)
-        print(f"  Applying {patch.name} to {repo}...")
+        print(f"Applying {patch.name} to {repo}...")
         result = subprocess.run(
-            ["git", "am", str(patch)], cwd=target,
-            capture_output=True, text=True,
+            ["git", "am", str(patch)],
+            cwd=target,
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             subprocess.run(
-                ["git", "am", "--abort"], cwd=target, capture_output=True,
+                ["git", "am", "--abort"],
+                cwd=target,
+                capture_output=True,
             )
             # Create a fix todo
             todos_dir = ws / "todos"
@@ -513,7 +482,7 @@ def do_am(ws: Path, push: bool = False):
                 f"Subject: {subject}\n"
             )
             patch.unlink()
-            print(f"  FAILED. Created todos/{fix_name}")
+            print(f"FAILED. Created todos/{fix_name}")
             continue
         applied_repos.add(repo)
         patch.unlink()
@@ -531,10 +500,11 @@ def do_am(ws: Path, push: bool = False):
 
     if push:
         for repo in sorted(applied_repos):
-            print(f"  Pushing {repo}...")
+            print(f"Pushing {repo}...")
             subprocess.run(
                 ["git", "push", "origin", "main"],
-                cwd=ws / "repos" / repo, check=True,
+                cwd=ws / "repos" / repo,
+                check=True,
             )
 
     print("Done.")
@@ -598,7 +568,6 @@ def cmd_status(args):
         print("  (none)")
 
 
-
 def cmd_reset(args):
     ws = workspace()
     wip_dir = ws / "wip"
@@ -607,10 +576,7 @@ def cmd_reset(args):
     def count_files(d):
         if not d.is_dir():
             return 0
-        return sum(
-            1 for f in d.rglob("*")
-            if f.is_file() and f.name != ".DS_Store"
-        )
+        return sum(1 for f in d.rglob("*") if f.is_file() and f.name != ".DS_Store")
 
     wip_count = count_files(wip_dir)
     mq_count = count_files(mq_dir)
@@ -651,7 +617,7 @@ def main():
         epilog="""\
 Commands:
   hire  <name>                             Create agent (interactive)
-  whip  [--model <m>] [-j N] [prompts]    Send agents to work
+  whip  [--model <m>] [-j N]              Send agents to work
   sh    <name>                             Shell into agent
   ls                                       List agents
   fire  <name>                             Remove agent
@@ -669,7 +635,6 @@ Commands:
     p_whip = sub.add_parser("whip", help="Send agents to work")
     p_whip.add_argument("--model", default=None)
     p_whip.add_argument("-j", type=int, default=None)
-    p_whip.add_argument("prompts", nargs="*")
     p_whip.set_defaults(func=cmd_whip)
 
     p_sh = sub.add_parser("sh", help="Shell into agent")
@@ -696,11 +661,6 @@ Commands:
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
-        sys.exit(1)
-
-    # Validate whip -j
-    if args.command == "whip" and args.j is not None and args.j < 1:
-        print("Error: -j requires a positive integer.", file=sys.stderr)
         sys.exit(1)
 
     args.func(args)

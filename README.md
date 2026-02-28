@@ -17,11 +17,9 @@ mickey hire bob
 ## Send work
 
 ```bash
-mickey whip                                          # all agents work continuously
-mickey whip --model claude-opus-4-6                 # choose model
-mickey whip -j 2                                     # run 2 agents
-mickey whip -j 2 "Add JWT auth" "Fix logging bug"   # 2 agents with specific tasks
-mickey whip "Add JWT auth:Fix logging bug"           # same, colon-separated
+mickey whip                              # all agents work continuously
+mickey whip --model claude-opus-4-6     # choose model
+mickey whip -j 2                         # run 2 agents
 ```
 
 ## Patch workflow
