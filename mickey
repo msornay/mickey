@@ -5,7 +5,6 @@ import argparse
 import os
 import random
 import re
-import signal
 import subprocess
 import sys
 import threading
@@ -23,9 +22,6 @@ You are a developer agent working inside a Docker sandbox.
 
 ## Your task
 You receive a specific task as your prompt. Work on it directly.
-
-If your task says "Rules audit", verify the repo follows its RULES.md conventions and fix any violations.
-Exit cleanly without producing a patch if everything is in order.
 
 ## Starting work
 0. Read $WORKSPACE_DIR/CLAUDE.md and $WORKSPACE_DIR/RULES.md for workspace-wide
@@ -48,7 +44,7 @@ Exit cleanly without producing a patch if everything is in order.
    git merge --squash <branch> && git commit -m "<message>"
 3. Produce the patch:
    mkdir -p $WORKSPACE_DIR/merge-queue/<repo>
-   git format-patch --base=main main --stdout > $WORKSPACE_DIR/merge-queue/<repo>/${TIMESTAMP}-$(hostname)-<short-name>.patch
+   git format-patch ${TODO_FILE:+--add-header="X-Todo: $TODO_FILE"} --base=main main --stdout > $WORKSPACE_DIR/merge-queue/<repo>/${TIMESTAMP}-$(hostname)-<short-name>.patch
 4. Verify: git checkout main && git am --check <patch-file>
 
 ## Deployment awareness
@@ -120,74 +116,88 @@ def workspace() -> Path:
 
 
 def pick_task(ws: Path):
-    """Pick a task: 70% from todos/, 20% QA tester, 10% rules audit.
+    """Pick a task: 10% rules audit, 90% random from todos + one QA entry.
+
+    The 90% pool lists all real todo files plus one synthetic "QA" entry,
+    then picks randomly.  This means:
+      - Many todos → QA is rare (1/(N+1))
+      - No todos   → QA is guaranteed
+      - Few todos  → QA gets a fair share
 
     Returns (wip_path_or_None, prompt_text, agent_type).
     Returns (None, None, None) when no task is available.
     """
+    repos_dir = ws / "repos"
+    repos = []
+    if repos_dir.is_dir():
+        repos = [
+            p.name
+            for p in repos_dir.iterdir()
+            if p.is_dir() and not p.name.startswith(".")
+        ]
+
     roll = random.randint(1, 10)
 
     # 10% chance: rules audit (roll == 1)
-    if roll == 1:
-        repos_dir = ws / "repos"
-        if repos_dir.is_dir():
-            repos = [
-                p.name
-                for p in repos_dir.iterdir()
-                if p.is_dir() and not p.name.startswith(".")
-            ]
-            if repos:
-                repo = random.choice(repos)
-                return (
-                    None,
-                    (
-                        f"Rules audit: clone $WORKSPACE_DIR/repos/{repo} "
-                        "into ~/work/{repo}. "
-                        "Read $WORKSPACE_DIR/RULES.md and the repo's own "
-                        "RULES.md (if any). "
-                        "Verify the repo follows the rules documented there. "
-                        "If you find violations, fix them and submit a patch. "
-                        "Exit cleanly if everything is in order."
-                    ),
-                    "developer",
-                )
+    if roll == 1 and repos:
+        repo = random.choice(repos)
+        return (
+            None,
+            (
+                f"Rules audit: clone $WORKSPACE_DIR/repos/{repo} "
+                f"into ~/work/{repo}. "
+                "Read $WORKSPACE_DIR/RULES.md and the repo's own "
+                "RULES.md (if any). "
+                "Verify the repo follows the rules documented there. "
+                "For each violation found, create a todo file in "
+                "$WORKSPACE_DIR/todos/ describing the issue. "
+                "Exit cleanly if everything is in order."
+            ),
+            "qa",
+        )
 
-    # 20% chance: QA tester (roll == 2 or 3)
-    if roll <= 3:
-        repos_dir = ws / "repos"
-        if repos_dir.is_dir():
-            repos = [
-                p.name
-                for p in repos_dir.iterdir()
-                if p.is_dir() and not p.name.startswith(".")
-            ]
-            if repos:
-                repo = random.choice(repos)
-                return (
-                    None,
-                    (
-                        f"QA test $WORKSPACE_DIR/repos/{repo}. "
-                        "Read only its documentation (README, CLAUDE.md, "
-                        "RULES.md, docs/, Makefile targets, --help output). "
-                        "Clone, install, and test every documented feature. "
-                        "File bug reports in $WORKSPACE_DIR/todos/ for any "
-                        "issues found. Clean up ~/work/ when done."
-                    ),
-                    "qa",
-                )
-
-    # 70% chance: pick from todos/ (roll 4-10)
+    # 90% chance: random pick from todos + one synthetic QA entry
     todos_dir = ws / "todos"
+    todos = []
     if todos_dir.is_dir():
         todos = list(todos_dir.glob("*.txt"))
-        if todos:
-            pick = random.choice(todos)
-            wip_dir = ws / "wip"
-            wip_dir.mkdir(exist_ok=True)
-            dest = wip_dir / pick.name
+
+    # Build pool: real todos + one QA sentinel
+    pool = list(todos)  # copy
+    QA_SENTINEL = "QA"
+    if repos:
+        pool.append(QA_SENTINEL)
+
+    if not pool:
+        return None, None, None
+
+    random.shuffle(pool)
+    for pick in pool:
+        if pick == QA_SENTINEL:
+            repo = random.choice(repos)
+            return (
+                None,
+                (
+                    f"QA test $WORKSPACE_DIR/repos/{repo}. "
+                    "Read only its documentation (README, CLAUDE.md, "
+                    "RULES.md, docs/, Makefile targets, --help output). "
+                    "Clone, install, and test every documented feature. "
+                    "File bug reports in $WORKSPACE_DIR/todos/ for any "
+                    "issues found. Clean up ~/work/ when done."
+                ),
+                "qa",
+            )
+
+        # Real todo file — mv is the concurrency lock
+        wip_dir = ws / "wip"
+        wip_dir.mkdir(exist_ok=True)
+        dest = wip_dir / pick.name
+        try:
             content = pick.read_text()
             pick.rename(dest)
-            return dest, content, "developer"
+        except OSError:
+            continue  # another agent grabbed it, try next
+        return dest, content, "developer"
 
     return None, None, None
 
@@ -216,6 +226,20 @@ def extract_subject(patch: Path) -> str:
     return "(unknown)"
 
 
+def extract_todo(patch: Path) -> str | None:
+    """Extract X-Todo header from a patch file."""
+    try:
+        with open(patch) as f:
+            for line in f:
+                if line.strip() == "":
+                    break  # end of headers
+                if line.startswith("X-Todo:"):
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
 # --- Agent management ---
 
 
@@ -234,7 +258,7 @@ def get_agents() -> list:
         return []
 
 
-def start_agent(name, prompt, ws, model, agent_type="developer"):
+def start_agent(name, prompt, ws, model, agent_type="developer", todo_file=None):
     """Start an agent in a background thread. Returns the thread."""
     rules = QA_RULES if agent_type == "qa" else AGENT_RULES
 
@@ -253,22 +277,24 @@ def start_agent(name, prompt, ws, model, agent_type="developer"):
         env = dict(os.environ)
         if model:
             env["ANTHROPIC_MODEL"] = model
+        if todo_file:
+            env["TODO_FILE"] = todo_file
         try:
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 env=env,
+                start_new_session=True,
             )
-            prefix = f"[{name}]"
-            for line in proc.stdout:
-                print(f"{prefix} {line.rstrip()}", flush=True)
             proc.wait()
+            t.returncode = proc.returncode
         except Exception as e:
             print(f"[{name}] error: {e}", flush=True)
+            t.returncode = 1
 
     t = threading.Thread(target=run, daemon=True, name=name)
+    t.returncode = None
     t.start()
     return t
 
@@ -333,18 +359,15 @@ def cmd_whip(args):
     import time
 
     threads = {}
+    wip_files = {}  # agent_name -> wip_path
     last_am = time.monotonic()
 
-    # Lock repos
     lock(ws)
-
-    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
-
     try:
         while True:
             patches = max_patches_per_repo(ws)
             stale = time.monotonic() - last_am > 900
-            if patches > 2 or (patches > 0 and stale):
+            if patches >= 2 or (patches > 0 and stale):
                 for t in threads.values():
                     t.join()
                 threads.clear()
@@ -356,8 +379,20 @@ def cmd_whip(args):
             for n in agents:
                 if n in threads and threads[n].is_alive():
                     continue
-                _, prompt, agent_type = pick_task(ws)
+                # Agent finished — return its wip if no patch was produced
+                if n in wip_files and wip_files[n]:
+                    wip = wip_files.pop(n)
+                    if wip.exists():
+                        rc = threads[n].returncode if n in threads else None
+                        dest = ws / "todos" / wip.name
+                        wip.rename(dest)
+                        if rc and rc != 0:
+                            print(f"{n} died (exit {rc}), returned {wip.name} to todos/")
+                        else:
+                            print(f"returned {wip.name} to todos/")
+                wip, prompt, agent_type = pick_task(ws)
                 if prompt:
+                    wip_files[n] = wip
                     print(f"sending {n} to work...")
                     threads[n] = start_agent(
                         n,
@@ -365,6 +400,7 @@ def cmd_whip(args):
                         ws,
                         model,
                         agent_type,
+                        todo_file=wip.name if wip else None,
                     )
 
             time.sleep(25)
@@ -413,20 +449,26 @@ def do_am(ws: Path, push: bool = False):
                 cwd=target,
                 capture_output=True,
             )
-            # Create a fix todo
+            # Create a fix todo with the patch content
             todos_dir = ws / "todos"
             todos_dir.mkdir(exist_ok=True)
             fix_name = f"fix-{patch.stem}.txt"
+            patch_content = patch.read_text()
             (todos_dir / fix_name).write_text(
                 f"Repo: {repo}\n"
-                f"The following patch failed to apply. "
-                f"Rebase and resubmit.\n"
-                f"Original: {patch.name}\n"
-                f"Subject: {subject}\n"
+                f"The following patch did not apply cleanly. "
+                f"Apply this fix to the current main.\n\n"
+                f"{patch_content}"
             )
             patch.unlink()
             print(f"failed. created todos/{fix_name}")
             continue
+        # Clean the wip file linked to this patch
+        todo_name = extract_todo(patch)
+        if todo_name:
+            wip_file = ws / "wip" / todo_name
+            if wip_file.exists():
+                wip_file.unlink()
         applied_repos.add(repo)
         patch.unlink()
         # Clean empty dirs
@@ -434,12 +476,6 @@ def do_am(ws: Path, push: bool = False):
             patch.parent.rmdir()
         except OSError:
             pass
-
-    # Clean wip files for completed work
-    wip_dir = ws / "wip"
-    if wip_dir.is_dir():
-        for f in wip_dir.glob("*.txt"):
-            f.unlink()
 
     if push:
         for repo in sorted(applied_repos):

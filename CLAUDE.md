@@ -14,17 +14,18 @@ The entire CLI is a single Python script (`mickey`) wrapping `docker sandbox` co
 
 ### Task model
 
-Tasks live as plain text files in `~/src/todos/`. Each `.txt` file is one task. The `whip` command picks tasks programmatically with a 70/20/10 split:
-- 70% of the time: pick a random file from `todos/`, move it to `wip/`, and assign its content as the agent's prompt (developer mode).
-- 20% of the time: **QA tester** — pick a random repo and test it from a user's perspective. The QA agent reads only documentation (never source code), installs and tests the software, cleans up `~/work/` when done, and files bug reports as `.txt` files in `todos/`.
-- 10% of the time: **rules audit** — verify a random repo follows its RULES.md conventions and fix violations (developer mode).
+Tasks live as plain text files in `~/src/todos/`. Each `.txt` file is one task. The `whip` command picks tasks with a 10/90 split:
+- 10% of the time: **rules audit** — verify a random repo follows its RULES.md conventions and file findings as todos (QA mode, no patches).
+- 90% of the time: random pick from all `todos/*.txt` files plus one synthetic **QA** entry. This means QA probability is 1/(N+1) where N is the number of todos — when todos are empty, QA is guaranteed; when many todos exist, QA is rare.
+
+When an agent finishes without producing a patch, its wip file is returned to `todos/` so the task is not lost.
 
 ```
 todos/foo.txt  →  whip picks, moves to wip/foo.txt  →  agent works  →  patch in merge-queue/
-                                                                            ↓
-                                                            mickey am applies patch
-                                                            → success: deletes wip/foo.txt
-                                                            → failure: creates todos/fix-foo.txt
+                                                              ↓                     ↓
+                                                    no patch: wip/foo.txt    mickey am applies patch
+                                                    returned to todos/       → success: deletes wip/foo.txt
+                                                                             → failure: creates todos/fix-foo.txt
 ```
 
 ### Conflict-aware whip
