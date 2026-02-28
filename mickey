@@ -336,6 +336,10 @@ def cmd_whip(args):
     ws = workspace()
     model = args.model
 
+    if args.j is not None and args.j < 1:
+        print("error: -j requires a positive integer.", file=sys.stderr)
+        sys.exit(1)
+
     # Determine agents to use
     all_agents = get_agents()
     if not all_agents:
@@ -343,9 +347,6 @@ def cmd_whip(args):
         return
 
     if args.j is not None:
-        if args.j < 1:
-            print("error: -j requires a positive integer.", file=sys.stderr)
-            sys.exit(1)
         if len(all_agents) < args.j:
             print(
                 f"requested {args.j} agents but only {len(all_agents)} available.",
