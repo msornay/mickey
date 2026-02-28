@@ -214,7 +214,7 @@ def test_am_no_patches():
         env = make_workspace(ws)
         r = run([str(MICKEY), "am"], env=env)
         assert r.returncode == 0
-        assert "No patches" in r.stdout
+        assert "no patches" in r.stdout
 
 
 def test_reset_confirmed():
@@ -292,7 +292,7 @@ def test_am_applies_patch():
         (mq / "test.patch").write_text(patch_content)
         r = run([str(MICKEY), "am"], env=env)
         assert r.returncode == 0
-        assert "Applying" in r.stdout
+        assert "applying" in r.stdout
         assert not (mq / "test.patch").exists()
         # Verify the patch was applied
         assert "world" in (repo / "file.txt").read_text()
@@ -337,7 +337,7 @@ def test_am_failed_patch_creates_todo():
             "--\n2.0.0\n"
         )
         r = run([str(MICKEY), "am"], env=env)
-        assert "FAILED" in r.stdout
+        assert "failed" in r.stdout
         # Check that a fix todo was created
         todos_dir = Path(ws) / "todos"
         fix_files = list(todos_dir.glob("fix-*.txt"))

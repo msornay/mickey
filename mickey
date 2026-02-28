@@ -264,66 +264,12 @@ def start_agent(name, prompt, ws, model, agent_type="developer"):
             for line in proc.stdout:
                 print(f"{prefix} {line}", end="", flush=True)
             proc.wait()
-            if proc.returncode == 1:
-                print(
-                    f"{prefix} exited with code 1 "
-                    "(credits exhausted?). Waiting 5 min...",
-                    flush=True,
-                )
-                import time
-
-                time.sleep(300)
         except Exception as e:
-            print(f"[{name}] Error: {e}", flush=True)
+            print(f"[{name}] error: {e}", flush=True)
 
     t = threading.Thread(target=run, daemon=True, name=name)
     t.start()
     return t
-
-
-# --- Activity watcher ---
-
-
-def activity_watcher(ws: Path):
-    """Daemon thread that monitors wip/ and merge-queue/ for changes."""
-    import time
-
-    wip_dir = ws / "wip"
-    mq_dir = ws / "merge-queue"
-
-    def snapshot_wip():
-        if wip_dir.is_dir():
-            return set(wip_dir.glob("*.txt"))
-        return set()
-
-    def snapshot_patches():
-        if mq_dir.is_dir():
-            return set(mq_dir.rglob("*.patch"))
-        return set()
-
-    prev_wip = snapshot_wip()
-    prev_patches = snapshot_patches()
-
-    while True:
-        time.sleep(10)
-
-        cur_wip = snapshot_wip()
-        for f in cur_wip - prev_wip:
-            try:
-                content = f.read_text().strip().split("\n")[0]
-                print(f">>> CLAIMED: {f.name}: {content}", flush=True)
-            except OSError:
-                pass
-        for f in prev_wip - cur_wip:
-            print(f">>> DONE: {f.stem}", flush=True)
-        prev_wip = cur_wip
-
-        cur_patches = snapshot_patches()
-        for f in cur_patches - prev_patches:
-            repo = f.parent.name
-            subject = extract_subject(f)
-            print(f">>> PATCH: {repo} — {subject}", flush=True)
-        prev_patches = cur_patches
 
 
 # --- Lock/unlock helpers ---
@@ -366,16 +312,16 @@ def cmd_whip(args):
     # Determine agents to use
     all_agents = get_agents()
     if not all_agents:
-        print("No agents found. Hire some first: mickey hire <name>")
+        print("no agents found. hire some first: mickey hire <name>")
         return
 
     if args.j is not None:
         if args.j < 1:
-            print("Error: -j requires a positive integer.", file=sys.stderr)
+            print("error: -j requires a positive integer.", file=sys.stderr)
             sys.exit(1)
         if len(all_agents) < args.j:
             print(
-                f"Requested {args.j} agents but only {len(all_agents)} available.",
+                f"requested {args.j} agents but only {len(all_agents)} available.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -389,14 +335,6 @@ def cmd_whip(args):
 
     # Lock repos
     lock(ws)
-
-    # Start activity watcher
-    watcher = threading.Thread(
-        target=activity_watcher,
-        args=(ws,),
-        daemon=True,
-    )
-    watcher.start()
 
     signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
 
@@ -415,7 +353,7 @@ def cmd_whip(args):
                     continue
                 _, prompt, agent_type = pick_task(ws)
                 if prompt:
-                    print(f"Sending {n} to work...")
+                    print(f"sending {n} to work...")
                     threads[n] = start_agent(
                         n,
                         prompt,
@@ -446,7 +384,7 @@ def do_am(ws: Path, push: bool = False):
     mq = ws / "merge-queue"
     patches = sorted(mq.rglob("*.patch"))
     if not patches:
-        print("No patches in merge-queue/.")
+        print("no patches in merge-queue/.")
         return
 
     applied_repos = set()
@@ -454,10 +392,10 @@ def do_am(ws: Path, push: bool = False):
         repo = patch.parent.name
         target = ws / "repos" / repo
         if not (target / ".git").is_dir():
-            print(f"Warning: {target} is not a git repo, skipping.")
+            print(f"warning: {target} is not a git repo, skipping.")
             continue
         subject = extract_subject(patch)
-        print(f"Applying {patch.name} to {repo}...")
+        print(f"applying {patch.name} to {repo}...")
         result = subprocess.run(
             ["git", "am", str(patch)],
             cwd=target,
@@ -482,7 +420,7 @@ def do_am(ws: Path, push: bool = False):
                 f"Subject: {subject}\n"
             )
             patch.unlink()
-            print(f"FAILED. Created todos/{fix_name}")
+            print(f"failed. created todos/{fix_name}")
             continue
         applied_repos.add(repo)
         patch.unlink()
@@ -500,14 +438,14 @@ def do_am(ws: Path, push: bool = False):
 
     if push:
         for repo in sorted(applied_repos):
-            print(f"Pushing {repo}...")
+            print(f"pushing {repo}...")
             subprocess.run(
                 ["git", "push", "origin", "main"],
                 cwd=ws / "repos" / repo,
                 check=True,
             )
 
-    print("Done.")
+    print("done.")
 
 
 def cmd_am(args):
@@ -518,14 +456,12 @@ def cmd_am(args):
 def cmd_status(args):
     ws = workspace()
 
-    print("=== Agents ===")
     try:
         subprocess.run(["docker", "sandbox", "ls"], timeout=10)
     except (subprocess.TimeoutExpired, FileNotFoundError):
         print("  (docker not available)")
     print()
 
-    print("=== Todos ===")
     todos_dir = ws / "todos"
     todo_found = False
     if todos_dir.is_dir():
@@ -537,7 +473,6 @@ def cmd_status(args):
         print("  (none)")
     print()
 
-    print("=== Work In Progress ===")
     wip_dir = ws / "wip"
     wip_found = False
     if wip_dir.is_dir():
@@ -553,7 +488,6 @@ def cmd_status(args):
         print("  (none)")
     print()
 
-    print("=== Merge Queue ===")
     mq = ws / "merge-queue"
     patch_found = False
     if mq.is_dir():
@@ -581,12 +515,12 @@ def cmd_reset(args):
     wip_count = count_files(wip_dir)
     mq_count = count_files(mq_dir)
 
-    print("This will delete:")
+    print("this will delete:")
     print(f"  {wip_count} file(s) in {wip_dir}")
     print(f"  {mq_count} file(s) in {mq_dir}")
-    answer = input("Continue? [y/N] ")
+    answer = input("continue? [y/N] ")
     if answer.strip().lower() != "y":
-        print("Aborted.")
+        print("aborted.")
         sys.exit(1)
 
     if wip_dir.is_dir():
@@ -606,7 +540,7 @@ def cmd_reset(args):
                 except OSError:
                     pass
 
-    print("Done.")
+    print("done.")
 
 
 def main():
