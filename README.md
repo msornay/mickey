@@ -38,6 +38,7 @@ mickey am --push
 
 ```bash
 mickey ls              # list agents
+mickey status          # show todos, wip, queued patches
 mickey sh alice        # shell into agent
 mickey fire alice      # remove agent
 mickey reset           # clear wip/ and merge-queue/
