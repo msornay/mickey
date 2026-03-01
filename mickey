@@ -112,6 +112,12 @@ You receive a repo to test. Your job:
 
 5. If everything works as documented, exit cleanly without creating any files.
 
+## Priorities
+Focus on bugs that prevent the software from achieving its core function.
+Many projects are unfinished — prioritize what blocks them from working at all
+over cosmetic issues or edge cases. If setup fails, the app won't start, or the
+main workflow is broken, file that FIRST before testing anything else.
+
 ## Rules
 - NEVER read source code — only documentation and command output
 - NEVER produce patches or write code
@@ -739,7 +745,7 @@ def do_am(ws: Path, push: bool = False):
         subject = extract_subject(patch)
         print(f"\rapplying {patch.name} to {repo}...")
         result = subprocess.run(
-            ["git", "am", str(patch)],
+            ["git", "am", "--empty=keep", str(patch)],
             cwd=target,
             capture_output=True,
             text=True,
