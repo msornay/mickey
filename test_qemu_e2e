@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# test_qemu_e2e — end-to-end QEMU VM smoke test
+# Prerequisites: brew install qemu cdrtools
+set -euo pipefail
+
+MICKEY="$(cd "$(dirname "$0")" && pwd)/mickey"
+export WORKSPACE_DIR="$(mktemp -d)"
+cleanup() { [ -d ~/.mickey/vms/test-agent ] && "$MICKEY" fire test-agent; rm -rf "$WORKSPACE_DIR"; }
+trap cleanup EXIT
+
+echo "=== Setup workspace ==="
+chmod 755 "$WORKSPACE_DIR"
+mkdir -p "$WORKSPACE_DIR"/{repos,todos,wip,merge-queue}
+
+echo "=== Test 0: mkimage builds the golden base image ==="
+if [ ! -f ~/.mickey/base.qcow2 ]; then
+    "$MICKEY" mkimage
+else
+    echo "  (base image already exists, skipping)"
+fi
+
+echo "=== Test 1: hire creates and boots a VM ==="
+"$MICKEY" hire test-agent <<< ""   # exit interactive claude immediately
+"$MICKEY" ls | grep -q test-agent
+
+echo "=== Test 2: SSH shell access works ==="
+PORT=$(cat ~/.mickey/vms/test-agent/ssh_port)
+KEY=~/.mickey/ssh_key
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -i "$KEY" -p "$PORT" agent@localhost "echo hello" | grep -q hello
+
+echo "=== Test 3: 9p filesystem sharing works ==="
+echo "host-canary" > "$WORKSPACE_DIR/test-share.txt"
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -i "$KEY" -p "$PORT" agent@localhost \
+    "cat /home/agent/src/test-share.txt" | grep -q host-canary
+
+# Write from guest back to host
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -i "$KEY" -p "$PORT" agent@localhost \
+    "echo guest-canary > /home/agent/src/merge-queue/test.txt"
+grep -q guest-canary "$WORKSPACE_DIR/merge-queue/test.txt"
+
+echo "=== Test 4: Docker works inside VM (no DinD) ==="
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -i "$KEY" -p "$PORT" agent@localhost \
+    "docker run --rm hello-world" | grep -q "Hello from Docker"
+
+echo "=== Test 5: Claude Code is installed ==="
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -i "$KEY" -p "$PORT" agent@localhost \
+    "claude --version" | grep -qi claude
+
+echo "=== Test 6: bash -s argument passing via 9p files ==="
+# Reproduce the exact pattern start_agent uses: write files to 9p share,
+# pipe a script via stdin to bash -s, have it read the files with $(cat ...)
+mkdir -p "$WORKSPACE_DIR/.mickey-tmp"
+echo "RULES_CANARY" > "$WORKSPACE_DIR/.mickey-tmp/test-agent-rules.txt"
+echo "PROMPT_CANARY" > "$WORKSPACE_DIR/.mickey-tmp/test-agent-prompt.txt"
+SCRIPT='echo "$(cat /home/agent/src/.mickey-tmp/test-agent-rules.txt)" "$(cat /home/agent/src/.mickey-tmp/test-agent-prompt.txt)"'
+OUTPUT=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -i "$KEY" -p "$PORT" agent@localhost "bash -s" <<< "$SCRIPT")
+echo "$OUTPUT" | grep -q RULES_CANARY
+echo "$OUTPUT" | grep -q PROMPT_CANARY
+rm -rf "$WORKSPACE_DIR/.mickey-tmp"
+
+echo "=== Test 7: fire shuts down and cleans up ==="
+"$MICKEY" fire test-agent
+! test -d ~/.mickey/vms/test-agent
+"$MICKEY" ls | grep -qv test-agent || true
+
+echo "=== All tests passed ==="

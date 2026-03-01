@@ -4,13 +4,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Mickey
 
-Mickey is a CLI for hiring AI agents that write code in isolated Docker sandboxes sharing `~/src/`. Agents produce `git format-patch` output after passing sanity tests (`make test`), submitting patches directly to a merge queue organized by repo.
+Mickey is a CLI for hiring AI agents that write code in isolated QEMU microVMs sharing `~/src/` via 9p filesystem. Agents produce `git format-patch` output after passing sanity tests (`make test`), submitting patches directly to a merge queue organized by repo.
 
-The entire CLI is a single Python script (`mickey`) wrapping `docker sandbox` commands.
+The entire CLI is a single Python script (`mickey`) managing QEMU VMs via SSH.
 
 ## Architecture
 
-- **`mickey`** — Python CLI (stdlib only, no dependencies). Maps commands to `docker sandbox` subcommands: `hire`→`create`, `whip`→`run` (all agents), `sh`→`exec`, `ls`→`ls`, `fire`→`rm`. Agent rules are inlined as a string constant and injected via `--append-system-prompt`.
+- **`mickey`** — Python CLI (stdlib only, no dependencies). Manages QEMU aarch64 microVMs with Apple HVF acceleration. Commands: `hire` (create VM + CoW overlay disk), `whip` (send agents to work via SSH), `sh` (SSH shell), `ls` (scan `~/.mickey/vms/`), `fire` (shutdown + cleanup), `mkimage` (build golden base image), `cleanup` (remove orphans). Agent rules are inlined as a string constant and injected via `--append-system-prompt` over SSH.
+
+### VM isolation
+
+Each agent runs in its own QEMU microVM with:
+- **CoW overlay disk** from a shared golden base image (`~/.mickey/base.qcow2`)
+- **9p filesystem sharing** for `$WORKSPACE_DIR` (mount tag: `workspace`, `security_model=none`)
+- **SSH access** via user-mode networking with port forwarding (ports start at 10022)
+- **4 GB RAM / 2 vCPUs** by default (configurable via `MICKEY_VM_RAM` / `MICKEY_VM_CPUS`)
+
+State lives in `~/.mickey/vms/<name>/` (disk overlay, UEFI vars, PID file, SSH port, monitor socket).
+
+### Prerequisites
+
+```
+brew install qemu
+mickey mkimage  # one-time: builds golden base image with Ubuntu 24.04 + Docker + Claude Code
+```
 
 ### Task model
 
@@ -41,21 +58,23 @@ Human runs mickey am → applies with git am → optionally pushes
 
 `mickey am` is pure Python/git — no Claude verification step. Failed patches create a fix todo in `todos/`.
 
-### Workspace layout (inside sandboxes)
+### Workspace layout (inside VMs)
 
 | Path | Purpose |
 |------|---------|
-| `$WORKSPACE_DIR/` (`~/src/`) | Synced to host. Agents must NOT modify directly (except merge-queue/). |
-| `$WORKSPACE_DIR/repos/` | Git repos (read-only). Agents clone from here. |
+| `/home/agent/src/` (`$WORKSPACE_DIR`) | 9p mount from host `~/src/`. Agents must NOT modify directly (except merge-queue/). |
+| `/home/agent/src/repos/` | Git repos (read-only). Agents clone from here. |
 | `~/work/` | Local workspace. Agents clone repos here. |
-| `$WORKSPACE_DIR/todos/` | Task files. One `.txt` per task, picked by whip. |
-| `$WORKSPACE_DIR/wip/` | Tasks in progress (moved from todos/ by whip). |
-| `$WORKSPACE_DIR/merge-queue/<repo>/` | Merge queue organized by repo (patches ready for human to apply). |
+| `/home/agent/src/todos/` | Task files. One `.txt` per task, picked by whip. |
+| `/home/agent/src/wip/` | Tasks in progress (moved from todos/ by whip). |
+| `/home/agent/src/merge-queue/<repo>/` | Merge queue organized by repo (patches ready for human to apply). |
 
 ## Testing
 
-Run the test suite with `python3 test_mickey` (or `pytest test_mickey` if available). Tests validate argument parsing, usage output, script structure, and E2E behavior with temp workspaces. No Docker required.
+Run the unit tests with `python3 test_mickey` (or `pytest test_mickey` if available). Tests validate argument parsing, usage output, script structure, QEMU helper functions, and E2E behavior with temp workspaces. No QEMU required for unit tests.
+
+For end-to-end VM lifecycle testing, run `./test_qemu_e2e` (requires `qemu-system-aarch64` and `mickey mkimage` to have been run first).
 
 ## Making changes
 
-Agent rules are defined in the `AGENT_RULES` (developer) and `QA_RULES` (QA tester) constants at the top of the `mickey` script and injected into each agent session via `--append-system-prompt`. Agents read `$WORKSPACE_DIR/CLAUDE.md` + `RULES.md` and the repo's own `CLAUDE.md` + `RULES.md` (if they exist) at the start of each run. To change agent behavior, edit the strings in `mickey` directly.
+Agent rules are defined in the `AGENT_RULES` (developer) and `QA_RULES` (QA tester) constants at the top of the `mickey` script and injected into each agent session via `--append-system-prompt` over SSH. Agents read `$WORKSPACE_DIR/CLAUDE.md` + `RULES.md` and the repo's own `CLAUDE.md` + `RULES.md` (if they exist) at the start of each run. To change agent behavior, edit the strings in `mickey` directly.

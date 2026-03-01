@@ -5,14 +5,19 @@ import argparse
 import os
 import random
 import re
+import shlex
+import shutil
+import signal
+import socket
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 AGENT_RULES = r"""# Agent Rules
 
-You are a developer agent working inside a Docker sandbox.
+You are a developer agent working inside a Linux VM.
 
 ## Workspace layout
 - $WORKSPACE_DIR/ is synced to the host. NEVER modify files here directly — only write to merge-queue/.
@@ -55,6 +60,15 @@ Deploying code is done by a human, not by agents. When your work involves deploy
 3. If the repo does NOT have a `deploy` target and your changes require deployment steps, create one as part of your patch. The `deploy` target should automate the configured deployment process.
 4. Include deployment notes in your commit message when relevant.
 
+## Already-fixed bugs
+If a task describes a bug that is already fixed, produce an empty patch so the task is retired:
+   cd ~/work/<repo> && git checkout -b verify-<name> main
+   git commit --allow-empty -m "Verified: <description> is already fixed"
+   mkdir -p $WORKSPACE_DIR/merge-queue/<repo>
+   TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+   git format-patch --always ${TODO_FILE:+--add-header="X-Todo: $TODO_FILE"} --base=main main --stdout > $WORKSPACE_DIR/merge-queue/<repo>/${TIMESTAMP}-$(hostname)-verify.patch
+Skip the squash step — the single empty commit is the patch.
+
 ## Rules
 - NEVER write to $WORKSPACE_DIR/ except $WORKSPACE_DIR/merge-queue/
 - NEVER modify, create, or delete files under $WORKSPACE_DIR/repos/
@@ -80,7 +94,7 @@ You receive a repo to test. Your job:
    Do NOT read source code files (.py, .js, .ts, .rs, .swift, .java, .sh, etc.).
 
 2. Clone the repo into ~/work/<repo> and follow the documented installation/setup instructions.
-   Clean up when done: remove ~/work/<repo> so the sandbox stays clean for the next run.
+   Clean up when done: remove ~/work/<repo> so the VM stays clean for the next run.
 
 3. Test every feature and workflow described in the documentation.
    Try edge cases, wrong inputs, missing prerequisites.
@@ -108,8 +122,162 @@ You receive a repo to test. Your job:
 """
 
 
+# --- State directories ---
+
+MICKEY_DIR = Path.home() / ".mickey"
+SSH_KEY = MICKEY_DIR / "ssh_key"
+VMS_DIR = MICKEY_DIR / "vms"
+
+
 def workspace() -> Path:
     return Path(os.environ.get("WORKSPACE_DIR", Path.home() / "src"))
+
+
+# --- QEMU helpers ---
+
+
+def ensure_mickey_dir():
+    """Create ~/.mickey dir structure and SSH keypair if missing."""
+    MICKEY_DIR.mkdir(exist_ok=True)
+    VMS_DIR.mkdir(exist_ok=True)
+    if not SSH_KEY.exists():
+        subprocess.run(
+            ["ssh-keygen", "-t", "ed25519", "-f", str(SSH_KEY),
+             "-N", "", "-q"],
+            check=True,
+        )
+
+
+def find_edk2_code() -> str:
+    """Find the UEFI firmware file for aarch64."""
+    candidates = [
+        Path("/opt/homebrew/share/qemu/edk2-aarch64-code.fd"),
+        Path("/usr/local/share/qemu/edk2-aarch64-code.fd"),
+        Path("/usr/share/qemu/edk2-aarch64-code.fd"),
+        Path("/usr/share/AAVMF/AAVMF_CODE.fd"),
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    sys.exit(
+        "error: cannot find edk2-aarch64-code.fd. "
+        "Install qemu: brew install qemu"
+    )
+
+
+def allocate_port() -> int:
+    """Find next free SSH port starting at 10022."""
+    used = set()
+    if VMS_DIR.is_dir():
+        for port_file in VMS_DIR.glob("*/ssh_port"):
+            try:
+                used.add(int(port_file.read_text().strip()))
+            except (ValueError, OSError):
+                pass
+    port = 10022
+    while port in used:
+        port += 1
+    return port
+
+
+def read_port(name: str) -> int:
+    """Read SSH port for a VM."""
+    return int((VMS_DIR / name / "ssh_port").read_text().strip())
+
+
+def ssh_cmd(name: str, extra_ssh_args=None) -> list:
+    """Build base SSH command for a VM."""
+    port = read_port(name)
+    cmd = [
+        "ssh",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        "-i", str(SSH_KEY),
+        "-p", str(port),
+    ]
+    if extra_ssh_args:
+        cmd.extend(extra_ssh_args)
+    cmd.append("agent@localhost")
+    return cmd
+
+
+def start_vm(name: str):
+    """Start a QEMU VM for the given agent."""
+    vm_dir = VMS_DIR / name
+    port = read_port(name)
+    ram = os.environ.get("MICKEY_VM_RAM", "4096")
+    cpus = os.environ.get("MICKEY_VM_CPUS", "2")
+    edk2 = find_edk2_code()
+    ws = str(workspace())
+
+    cmd = [
+        "qemu-system-aarch64",
+        "-accel", "hvf",
+        "-cpu", "host",
+        "-M", "virt,highmem=on",
+        "-m", ram,
+        "-smp", cpus,
+        "-drive", f"file={edk2},if=pflash,format=raw,readonly=on",
+        "-drive", f"file={vm_dir}/vars.fd,if=pflash,format=raw",
+        "-drive", f"if=virtio,file={vm_dir}/disk.qcow2,format=qcow2",
+        "-netdev", f"user,id=net0,hostfwd=tcp::{port}-:22",
+        "-device", "virtio-net-pci,netdev=net0",
+        "-virtfs",
+        f"local,path={ws},mount_tag=workspace,security_model=none",
+        "-monitor", f"unix:{vm_dir}/monitor.sock,server,nowait",
+        "-pidfile", f"{vm_dir}/pid",
+        "-display", "none",
+        "-serial", f"file:{vm_dir}/console.log",
+        "-daemonize",
+    ]
+    subprocess.run(cmd, check=True)
+
+
+def stop_vm(name: str):
+    """Stop a QEMU VM via monitor socket, falling back to SIGKILL."""
+    vm_dir = VMS_DIR / name
+    monitor = vm_dir / "monitor.sock"
+    pid_file = vm_dir / "pid"
+
+    # Try clean shutdown via QEMU monitor
+    if monitor.exists():
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.connect(str(monitor))
+            s.sendall(b"system_powerdown\n")
+            s.close()
+        except OSError:
+            pass
+
+    # Wait up to 10s for process to exit
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            for _ in range(20):
+                try:
+                    os.kill(pid, 0)
+                    time.sleep(0.5)
+                except ProcessLookupError:
+                    return
+            # Still alive after 10s — force kill
+            os.kill(pid, signal.SIGKILL)
+        except (ValueError, ProcessLookupError, OSError):
+            pass
+
+
+def wait_for_ssh(name: str, timeout: int = 120):
+    """Poll until SSH is ready on the VM's port."""
+    port = read_port(name)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            s = socket.create_connection(("localhost", port), timeout=2)
+            s.close()
+            return
+        except OSError:
+            time.sleep(1)
+    sys.exit(f"error: SSH not ready on port {port} after {timeout}s")
 
 
 # --- Task selection ---
@@ -226,6 +394,24 @@ def extract_subject(patch: Path) -> str:
     return "(unknown)"
 
 
+def stamp_todo_header(ws: Path, todo_name: str):
+    """Add X-Todo header to any patches in merge-queue/ that lack it."""
+    mq = ws / "merge-queue"
+    for patch in mq.rglob("*.patch"):
+        if extract_todo(patch) is None:
+            content = patch.read_text()
+            # Insert X-Todo after the Subject line
+            patched = re.sub(
+                r"(^Subject: .+\n)",
+                rf"\1X-Todo: {todo_name}\n",
+                content,
+                count=1,
+                flags=re.MULTILINE,
+            )
+            if patched != content:
+                patch.write_text(patched)
+
+
 def extract_todo(patch: Path) -> str | None:
     """Extract X-Todo header from a patch file."""
     try:
@@ -244,53 +430,76 @@ def extract_todo(patch: Path) -> str | None:
 
 
 def get_agents() -> list:
-    """List available agent names from docker sandbox ls."""
-    try:
-        r = subprocess.run(
-            ["docker", "sandbox", "ls"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        lines = r.stdout.strip().splitlines()
-        return [line.split()[0] for line in lines[1:] if line.strip()]
-    except (subprocess.TimeoutExpired, FileNotFoundError, IndexError):
-        return []
+    """List running agent names from ~/.mickey/vms/."""
+    agents = []
+    if not VMS_DIR.is_dir():
+        return agents
+    for vm_dir in sorted(VMS_DIR.iterdir()):
+        if not vm_dir.is_dir():
+            continue
+        pid_file = vm_dir / "pid"
+        if not pid_file.exists():
+            continue
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)  # check if alive
+            agents.append(vm_dir.name)
+        except (ValueError, ProcessLookupError, OSError):
+            pass
+    return agents
 
 
-def start_agent(name, prompt, ws, model, agent_type="developer", todo_file=None):
+def start_agent(name, prompt, ws, model, agent_type="developer", todo_file=None,
+                debug=False):
     """Start an agent in a background thread. Returns the thread."""
     rules = QA_RULES if agent_type == "qa" else AGENT_RULES
 
     def run():
-        cmd = [
-            "docker",
-            "sandbox",
-            "run",
-            name,
-            "--",
-            "--append-system-prompt",
-            rules,
-            "-p",
-            prompt,
-        ]
-        env = dict(os.environ)
+        # Write rules and prompt to files on the 9p share so we don't
+        # have to pass them through SSH quoting hell.
+        tmp_dir = ws / ".mickey-tmp"
+        tmp_dir.mkdir(exist_ok=True)
+        rules_file = tmp_dir / f"{name}-rules.txt"
+        prompt_file = tmp_dir / f"{name}-prompt.txt"
+        rules_file.write_text(rules)
+        prompt_file.write_text(prompt)
+
+        guest_rules = f"/home/agent/src/.mickey-tmp/{name}-rules.txt"
+        guest_prompt = f"/home/agent/src/.mickey-tmp/{name}-prompt.txt"
+
+        # Build a launcher script piped via stdin — no quoting issues
+        lines = ["export WORKSPACE_DIR=/home/agent/src"]
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if api_key:
+            lines.append(f"export ANTHROPIC_API_KEY={shlex.quote(api_key)}")
         if model:
-            env["ANTHROPIC_MODEL"] = model
+            lines.append(f"export ANTHROPIC_MODEL={shlex.quote(model)}")
         if todo_file:
-            env["TODO_FILE"] = todo_file
+            lines.append(f"export TODO_FILE={shlex.quote(todo_file)}")
+        lines.append(
+            f'exec claude --dangerously-skip-permissions'
+            f' --append-system-prompt "$(cat {guest_rules})"'
+            f' -p "$(cat {guest_prompt})"'
+        )
+        script = "\n".join(lines) + "\n"
+
+        cmd = ssh_cmd(name) + ["bash", "-s"]
+        if debug:
+            print(f"[{name}] script:\n{script}", flush=True)
         try:
+            out = None if debug else subprocess.DEVNULL
+            err = None if debug else subprocess.DEVNULL
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=env,
+                stdin=subprocess.PIPE,
+                stdout=out,
+                stderr=err,
                 start_new_session=True,
             )
-            proc.wait()
+            proc.communicate(input=script.encode())
             t.returncode = proc.returncode
         except Exception as e:
-            print(f"[{name}] error: {e}", flush=True)
+            print(f"\r[{name}] error: {e}", flush=True)
             t.returncode = 1
 
     t = threading.Thread(target=run, daemon=True, name=name)
@@ -325,11 +534,64 @@ def unlock(ws: Path):
 
 def cmd_hire(args):
     name = args.name
+    ensure_mickey_dir()
+
+    vm_dir = VMS_DIR / name
+    if vm_dir.exists():
+        print(f"error: VM '{name}' already exists.", file=sys.stderr)
+        sys.exit(1)
+    vm_dir.mkdir()
+
+    base_img = MICKEY_DIR / "base.qcow2"
+    base_vars = MICKEY_DIR / "base-vars.fd"
+    if not base_img.exists():
+        print(
+            "error: base image not found. Run: mickey mkimage",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Create CoW overlay disk
     subprocess.run(
-        ["docker", "sandbox", "create", "--name", name, "claude", str(workspace())],
+        [
+            "qemu-img", "create", "-f", "qcow2",
+            "-b", str(base_img), "-F", "qcow2",
+            str(vm_dir / "disk.qcow2"),
+        ],
         check=True,
     )
-    subprocess.run(["docker", "sandbox", "run", name], check=True)
+
+    # Copy UEFI vars
+    if base_vars.exists():
+        shutil.copy2(str(base_vars), str(vm_dir / "vars.fd"))
+    else:
+        # Create blank 64MB vars file
+        with open(vm_dir / "vars.fd", "wb") as f:
+            f.truncate(64 * 1024 * 1024)
+
+    # Allocate SSH port
+    port = allocate_port()
+    (vm_dir / "ssh_port").write_text(str(port))
+
+    # Ensure workspace is accessible via 9p (guest UID differs from host)
+    ws = workspace()
+    mq = ws / "merge-queue"
+    mq.mkdir(exist_ok=True)
+    os.chmod(str(mq), 0o777)
+
+    # Start VM
+    start_vm(name)
+    print(f"waiting for VM '{name}' to boot (port {port})...")
+    wait_for_ssh(name)
+    # Set hostname to agent name so patches use it
+    subprocess.run(
+        ssh_cmd(name) + ["sudo", "hostnamectl", "set-hostname", name],
+        capture_output=True,
+    )
+    print(f"VM '{name}' is ready.")
+
+    # Interactive claude session for setup
+    os.execvp("ssh", ssh_cmd(name, ["-t"]) + ["claude"])
 
 
 def cmd_whip(args):
@@ -337,27 +599,25 @@ def cmd_whip(args):
     model = args.model
 
     if args.j is not None and args.j < 1:
-        print("error: -j requires a positive integer.", file=sys.stderr)
+        print("\rerror: -j requires a positive integer.", file=sys.stderr)
         sys.exit(1)
 
     # Determine agents to use
     all_agents = get_agents()
     if not all_agents:
-        print("no agents found. hire some first: mickey hire <name>")
+        print("\rno agents found. hire some first: mickey hire <name>")
         return
 
     if args.j is not None:
         if len(all_agents) < args.j:
             print(
-                f"requested {args.j} agents but only {len(all_agents)} available.",
+                f"\rrequested {args.j} agents but only {len(all_agents)} available.",
                 file=sys.stderr,
             )
             sys.exit(1)
         agents = all_agents[: args.j]
     else:
         agents = all_agents
-
-    import time
 
     threads = {}
     wip_files = {}  # agent_name -> wip_path
@@ -380,21 +640,30 @@ def cmd_whip(args):
             for n in agents:
                 if n in threads and threads[n].is_alive():
                     continue
-                # Agent finished — return its wip if no patch was produced
+                # Agent finished — stamp X-Todo into any patches it produced,
+                # then return wip to todos if no patch was produced.
                 if n in wip_files and wip_files[n]:
                     wip = wip_files.pop(n)
-                    if wip.exists():
+                    # Stamp X-Todo header into new patches missing it
+                    stamp_todo_header(ws, wip.name)
+                    has_patch = any(
+                        extract_todo(p) == wip.name
+                        for p in (ws / "merge-queue").rglob("*.patch")
+                    )
+                    if has_patch:
+                        print(f"\r{wip.name} has patch in merge-queue")
+                    elif wip.exists():
                         rc = threads[n].returncode if n in threads else None
                         dest = ws / "todos" / wip.name
                         wip.rename(dest)
                         if rc and rc != 0:
-                            print(f"{n} died (exit {rc}), returned {wip.name} to todos/")
+                            print(f"\r{n} died (exit {rc}), returned {wip.name} to todos/")
                         else:
-                            print(f"returned {wip.name} to todos/")
+                            print(f"\rreturned {wip.name} to todos/")
                 wip, prompt, agent_type = pick_task(ws)
                 if prompt:
                     wip_files[n] = wip
-                    print(f"sending {n} to work...")
+                    print(f"\rsending {n} to work...")
                     threads[n] = start_agent(
                         n,
                         prompt,
@@ -402,6 +671,7 @@ def cmd_whip(args):
                         model,
                         agent_type,
                         todo_file=wip.name if wip else None,
+                        debug=args.debug,
                     )
 
             time.sleep(25)
@@ -410,15 +680,45 @@ def cmd_whip(args):
 
 
 def cmd_sh(args):
-    os.execvp("docker", ["docker", "sandbox", "exec", "-it", args.name, "bash"])
+    os.execvp("ssh", ssh_cmd(args.name, ["-t"]) + ["bash"])
 
 
 def cmd_ls(args):
-    subprocess.run(["docker", "sandbox", "ls"])
+    if not VMS_DIR.is_dir():
+        print("no VMs found.")
+        return
+    found = False
+    print(f"{'NAME':<20} {'STATUS':<10} {'PORT':<8}")
+    for vm_dir in sorted(VMS_DIR.iterdir()):
+        if not vm_dir.is_dir():
+            continue
+        found = True
+        name = vm_dir.name
+        pid_file = vm_dir / "pid"
+        port_file = vm_dir / "ssh_port"
+        port = port_file.read_text().strip() if port_file.exists() else "?"
+        status = "stopped"
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, 0)
+                status = "running"
+            except (ValueError, ProcessLookupError, OSError):
+                pass
+        print(f"{name:<20} {status:<10} {port:<8}")
+    if not found:
+        print("no VMs found.")
 
 
 def cmd_fire(args):
-    subprocess.run(["docker", "sandbox", "rm", args.name], check=True)
+    name = args.name
+    vm_dir = VMS_DIR / name
+    if not vm_dir.is_dir():
+        print(f"error: VM '{name}' not found.", file=sys.stderr)
+        sys.exit(1)
+    stop_vm(name)
+    shutil.rmtree(vm_dir)
+    print(f"removed '{name}'.")
 
 
 def do_am(ws: Path, push: bool = False):
@@ -426,7 +726,7 @@ def do_am(ws: Path, push: bool = False):
     mq = ws / "merge-queue"
     patches = sorted(mq.rglob("*.patch"))
     if not patches:
-        print("no patches in merge-queue/.")
+        print("\rno patches in merge-queue/.")
         return
 
     applied_repos = set()
@@ -434,10 +734,10 @@ def do_am(ws: Path, push: bool = False):
         repo = patch.parent.name
         target = ws / "repos" / repo
         if not (target / ".git").is_dir():
-            print(f"warning: {target} is not a git repo, skipping.")
+            print(f"\rwarning: {target} is not a git repo, skipping.")
             continue
         subject = extract_subject(patch)
-        print(f"applying {patch.name} to {repo}...")
+        print(f"\rapplying {patch.name} to {repo}...")
         result = subprocess.run(
             ["git", "am", str(patch)],
             cwd=target,
@@ -462,7 +762,7 @@ def do_am(ws: Path, push: bool = False):
                 f"{patch_content}"
             )
             patch.unlink()
-            print(f"failed. created todos/{fix_name}")
+            print(f"\rfailed. created todos/{fix_name}")
             continue
         # Clean the wip file linked to this patch
         todo_name = extract_todo(patch)
@@ -480,7 +780,7 @@ def do_am(ws: Path, push: bool = False):
 
     if push:
         for repo in sorted(applied_repos):
-            print(f"pushing {repo}...")
+            print(f"\rpushing {repo}...")
             r = subprocess.run(
                 ["git", "push"],
                 cwd=ws / "repos" / repo,
@@ -488,9 +788,9 @@ def do_am(ws: Path, push: bool = False):
                 text=True,
             )
             if r.returncode != 0:
-                print(f"push failed for {repo}: {r.stderr.strip()}")
+                print(f"\rpush failed for {repo}: {r.stderr.strip()}")
 
-    print("done.")
+    print("\rdone.")
 
 
 def cmd_am(args):
@@ -501,11 +801,14 @@ def cmd_am(args):
 def cmd_status(args):
     ws = workspace()
 
-    try:
-        subprocess.run(["docker", "sandbox", "ls"], timeout=10)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        print("  (docker not available)")
-    print()
+    agents = get_agents()
+    if agents:
+        for name in agents:
+            port = read_port(name)
+            print(f"\r  {name} (port {port})")
+    else:
+        print("\r  (no agents)")
+    print("\r")
 
     todos_dir = ws / "todos"
     todo_found = False
@@ -513,10 +816,10 @@ def cmd_status(args):
         for f in sorted(todos_dir.glob("*.txt")):
             todo_found = True
             first_line = f.read_text().strip().split("\n")[0]
-            print(f"  {f.name}: {first_line}")
+            print(f"\r  {f.name}: {first_line}")
     if not todo_found:
-        print("  (none)")
-    print()
+        print("\r  (none)")
+    print("\r")
 
     wip_dir = ws / "wip"
     wip_found = False
@@ -524,14 +827,14 @@ def cmd_status(args):
         for f in sorted(wip_dir.glob("*.txt")):
             wip_found = True
             first_line = f.read_text().strip().split("\n")[0]
-            print(f"  {f.name}: {first_line}")
+            print(f"\r  {f.name}: {first_line}")
         # Also check for old .wip files
         for f in sorted(wip_dir.glob("*.wip")):
             wip_found = True
-            print(f"  {f.read_text().strip()}")
+            print(f"\r  {f.read_text().strip()}")
     if not wip_found:
-        print("  (none)")
-    print()
+        print("\r  (none)")
+    print("\r")
 
     mq = ws / "merge-queue"
     patch_found = False
@@ -542,9 +845,9 @@ def cmd_status(args):
             for patch in sorted(repo_dir.glob("*.patch")):
                 patch_found = True
                 subject = extract_subject(patch)
-                print(f"  {repo_dir.name}: {subject}")
+                print(f"\r  {repo_dir.name}: {subject}")
     if not patch_found:
-        print("  (none)")
+        print("\r  (none)")
 
 
 def cmd_reset(args):
@@ -562,13 +865,26 @@ def cmd_reset(args):
 
     todos_dir = ws / "todos"
 
-    print("this will:")
-    print(f"  move {wip_count} file(s) from {wip_dir} back to {todos_dir}")
-    print(f"  delete {mq_count} file(s) in {mq_dir}")
+    agents = get_agents()
+
+    print("\rthis will:")
+    if agents:
+        print(f"\r  kill claude in {len(agents)} agent(s): {', '.join(agents)}")
+    print(f"\r  move {wip_count} file(s) from {wip_dir} back to {todos_dir}")
+    print(f"\r  delete {mq_count} file(s) in {mq_dir}")
     answer = input("continue? [y/N] ")
     if answer.strip().lower() != "y":
-        print("aborted.")
+        print("\raborted.")
         sys.exit(1)
+
+    for name in agents:
+        try:
+            subprocess.run(
+                ssh_cmd(name) + ["pkill", "-f", "claude"],
+                capture_output=True, timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
     if wip_dir.is_dir():
         todos_dir.mkdir(exist_ok=True)
@@ -588,7 +904,162 @@ def cmd_reset(args):
                 except OSError:
                     pass
 
-    print("done.")
+    print("\rdone.")
+
+
+def cmd_mkimage(args):
+    """Create the golden base image for QEMU VMs."""
+    ensure_mickey_dir()
+    base_img = MICKEY_DIR / "base.qcow2"
+    base_vars = MICKEY_DIR / "base-vars.fd"
+
+    if base_img.exists() and not args.force:
+        print(
+            "base image already exists. Use --force to rebuild.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    edk2 = find_edk2_code()
+
+    # Download Ubuntu 24.04 cloud image if needed
+    dl_path = MICKEY_DIR / "noble-server-cloudimg-arm64.img"
+    if not dl_path.exists():
+        print("downloading Ubuntu 24.04 arm64 cloud image...")
+        subprocess.run(
+            [
+                "curl", "-L", "-o", str(dl_path),
+                "https://cloud-images.ubuntu.com/noble/current/"
+                "noble-server-cloudimg-arm64.img",
+            ],
+            check=True,
+        )
+
+    # Create base image from cloud image
+    print("creating base image...")
+    shutil.copy2(str(dl_path), str(base_img))
+    subprocess.run(
+        ["qemu-img", "resize", str(base_img), "40G"], check=True,
+    )
+
+    # Create UEFI vars template
+    edk2_vars_src = Path(edk2).parent / "edk2-arm-vars.fd"
+    if edk2_vars_src.exists():
+        shutil.copy2(str(edk2_vars_src), str(base_vars))
+    else:
+        # Create blank 64MB vars file
+        with open(base_vars, "wb") as f:
+            f.truncate(64 * 1024 * 1024)
+
+    # Write cloud-init config
+    ci_dir = MICKEY_DIR / "cloud-init"
+    ci_dir.mkdir(exist_ok=True)
+
+    pub_key = SSH_KEY.with_suffix(".pub").read_text().strip()
+
+    (ci_dir / "meta-data").write_text(
+        "instance-id: mickey-base\nlocal-hostname: mickey\n"
+    )
+    (ci_dir / "user-data").write_text(
+        "#cloud-config\n"
+        "users:\n"
+        "  - name: agent\n"
+        "    sudo: ALL=(ALL) NOPASSWD:ALL\n"
+        "    shell: /bin/bash\n"
+        "    ssh_authorized_keys:\n"
+        f"      - {pub_key}\n"
+        "\n"
+        "package_update: true\n"
+        "packages:\n"
+        "  - docker.io\n"
+        "  - docker-compose-v2\n"
+        "  - git\n"
+        "  - build-essential\n"
+        "  - curl\n"
+        "\n"
+        "runcmd:\n"
+        "  - usermod -aG docker agent\n"
+        "  - systemctl enable docker\n"
+        "  - systemctl start docker\n"
+        "  - |\n"
+        "    curl -fsSL https://deb.nodesource.com/setup_22.x"
+        " | bash -\n"
+        "    apt-get install -y nodejs\n"
+        "    npm install -g @anthropic-ai/claude-code\n"
+        "  - mkdir -p /home/agent/src /home/agent/work\n"
+        "  - chown -R agent:agent /home/agent\n"
+        "  - echo 'workspace /home/agent/src 9p"
+        " _netdev,trans=virtio,msize=524288 0 0'"
+        " >> /etc/fstab\n"
+        "  - cloud-init clean --logs\n"
+        "  - poweroff\n"
+    )
+
+    # Create cloud-init ISO
+    ci_iso = MICKEY_DIR / "cloud-init.iso"
+    subprocess.run(
+        [
+            "mkisofs", "-output", str(ci_iso), "-volid", "cidata",
+            "-joliet", "-rock",
+            str(ci_dir / "user-data"), str(ci_dir / "meta-data"),
+        ],
+        check=True,
+    )
+
+    # Boot VM with cloud-init to provision (blocks until poweroff)
+    print("provisioning base image (this takes a few minutes)...")
+    result = subprocess.run(
+        [
+            "qemu-system-aarch64",
+            "-accel", "hvf",
+            "-cpu", "host",
+            "-M", "virt,highmem=on",
+            "-m", "4096",
+            "-smp", "2",
+            "-drive", f"file={edk2},if=pflash,format=raw,readonly=on",
+            "-drive", f"file={base_vars},if=pflash,format=raw",
+            "-drive", f"if=virtio,file={base_img},format=qcow2",
+            "-drive", f"file={ci_iso},if=virtio,format=raw,readonly=on",
+            "-netdev", "user,id=net0",
+            "-device", "virtio-net-pci,netdev=net0",
+            "-nographic",
+        ],
+    )
+    if result.returncode != 0:
+        print("error: provisioning failed.", file=sys.stderr)
+        sys.exit(1)
+
+    # Clean up cloud-init artifacts
+    ci_iso.unlink(missing_ok=True)
+    shutil.rmtree(ci_dir, ignore_errors=True)
+
+    print(f"base image ready: {base_img}")
+
+
+def cmd_cleanup(args):
+    """Remove orphan VM directories whose processes are dead."""
+    if not VMS_DIR.is_dir():
+        print("no VMs directory found.")
+        return
+    cleaned = 0
+    for vm_dir in sorted(VMS_DIR.iterdir()):
+        if not vm_dir.is_dir():
+            continue
+        pid_file = vm_dir / "pid"
+        if not pid_file.exists():
+            shutil.rmtree(vm_dir)
+            print(f"removed stale directory: {vm_dir.name}")
+            cleaned += 1
+            continue
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)
+        except (ValueError, ProcessLookupError, OSError):
+            shutil.rmtree(vm_dir)
+            print(f"removed orphan: {vm_dir.name}")
+            cleaned += 1
+    if cleaned == 0:
+        print("no orphans found.")
 
 
 def main():
@@ -598,35 +1069,39 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Commands:
-  hire  <name>                             Create agent (interactive)
-  whip  [--model <m>] [-j N]              Send agents to work
-  sh    <name>                             Shell into agent
-  ls                                       List agents
-  fire  <name>                             Remove agent
-  am    [--push]                           Apply patches from merge-queue/
+  hire     <name>                          Create agent VM (interactive)
+  whip     [--model <m>] [-j N]            Send agents to work
+  sh       <name>                          Shell into agent VM
+  ls                                       List agent VMs
+  fire     <name>                          Remove agent VM
+  am       [--push]                        Apply patches from merge-queue/
   status                                   Show todos, wip, queued patches
   reset                                    Clear wip/ and merge-queue/
+  mkimage  [--force]                       Build golden base VM image
+  cleanup                                  Remove orphan VM directories
 """,
     )
     sub = parser.add_subparsers(dest="command")
 
-    p_hire = sub.add_parser("hire", help="Create agent")
+    p_hire = sub.add_parser("hire", help="Create agent VM")
     p_hire.add_argument("name")
     p_hire.set_defaults(func=cmd_hire)
 
     p_whip = sub.add_parser("whip", help="Send agents to work")
     p_whip.add_argument("--model", default=None)
     p_whip.add_argument("-j", type=int, default=None)
+    p_whip.add_argument("--debug", action="store_true",
+                        help="Show agent stdout/stderr")
     p_whip.set_defaults(func=cmd_whip)
 
-    p_sh = sub.add_parser("sh", help="Shell into agent")
+    p_sh = sub.add_parser("sh", help="Shell into agent VM")
     p_sh.add_argument("name")
     p_sh.set_defaults(func=cmd_sh)
 
-    p_ls = sub.add_parser("ls", help="List agents")
+    p_ls = sub.add_parser("ls", help="List agent VMs")
     p_ls.set_defaults(func=cmd_ls)
 
-    p_fire = sub.add_parser("fire", help="Remove agent")
+    p_fire = sub.add_parser("fire", help="Remove agent VM")
     p_fire.add_argument("name")
     p_fire.set_defaults(func=cmd_fire)
 
@@ -639,6 +1114,13 @@ Commands:
 
     p_reset = sub.add_parser("reset", help="Clear wip/ and merge-queue/")
     p_reset.set_defaults(func=cmd_reset)
+
+    p_mkimage = sub.add_parser("mkimage", help="Build golden base VM image")
+    p_mkimage.add_argument("--force", action="store_true")
+    p_mkimage.set_defaults(func=cmd_mkimage)
+
+    p_cleanup = sub.add_parser("cleanup", help="Remove orphan VM directories")
+    p_cleanup.set_defaults(func=cmd_cleanup)
 
     args = parser.parse_args()
     if not args.command:

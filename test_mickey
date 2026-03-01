@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Tests for mickey CLI."""
+import importlib.machinery
+import importlib.util
 import os
 import subprocess
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 MICKEY = Path(__file__).parent / "mickey"
 
@@ -82,6 +85,127 @@ def test_usage_mentions_status():
     r = run([str(MICKEY)])
     out = r.stdout + r.stderr
     assert "status" in out
+
+
+def test_usage_mentions_mkimage():
+    r = run([str(MICKEY)])
+    out = r.stdout + r.stderr
+    assert "mkimage" in out
+
+
+def test_usage_mentions_cleanup():
+    r = run([str(MICKEY)])
+    out = r.stdout + r.stderr
+    assert "cleanup" in out
+
+
+# ===== Unit tests for QEMU helpers =====
+
+def _import_mickey():
+    """Import mickey as a module for testing helpers directly."""
+    import importlib.util
+    loader = importlib.machinery.SourceFileLoader("mickey_mod", str(MICKEY))
+    spec = importlib.util.spec_from_loader("mickey_mod", loader)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_allocate_port_empty():
+    """allocate_port returns 10022 when no VMs exist."""
+    mickey = _import_mickey()
+    with tempfile.TemporaryDirectory() as tmp:
+        with patch.object(mickey, "VMS_DIR", Path(tmp) / "vms"):
+            (Path(tmp) / "vms").mkdir()
+            assert mickey.allocate_port() == 10022
+
+
+def test_allocate_port_skips_used():
+    """allocate_port skips ports already in use."""
+    mickey = _import_mickey()
+    with tempfile.TemporaryDirectory() as tmp:
+        vms = Path(tmp) / "vms"
+        vms.mkdir()
+        with patch.object(mickey, "VMS_DIR", vms):
+            # Create two VMs using ports 10022 and 10023
+            (vms / "vm1").mkdir()
+            (vms / "vm1" / "ssh_port").write_text("10022")
+            (vms / "vm2").mkdir()
+            (vms / "vm2" / "ssh_port").write_text("10023")
+            assert mickey.allocate_port() == 10024
+
+
+def test_allocate_port_fills_gap():
+    """allocate_port fills gaps in port sequence."""
+    mickey = _import_mickey()
+    with tempfile.TemporaryDirectory() as tmp:
+        vms = Path(tmp) / "vms"
+        vms.mkdir()
+        with patch.object(mickey, "VMS_DIR", vms):
+            # Only port 10022 used, 10023 should be next
+            (vms / "vm1").mkdir()
+            (vms / "vm1" / "ssh_port").write_text("10022")
+            (vms / "vm3").mkdir()
+            (vms / "vm3" / "ssh_port").write_text("10024")
+            assert mickey.allocate_port() == 10023
+
+
+def test_read_port():
+    """read_port reads the port from a VM's ssh_port file."""
+    mickey = _import_mickey()
+    with tempfile.TemporaryDirectory() as tmp:
+        vms = Path(tmp) / "vms"
+        with patch.object(mickey, "VMS_DIR", vms):
+            (vms / "testvm").mkdir(parents=True)
+            (vms / "testvm" / "ssh_port").write_text("10042\n")
+            assert mickey.read_port("testvm") == 10042
+
+
+def test_get_agents_empty():
+    """get_agents returns empty list when no VMs exist."""
+    mickey = _import_mickey()
+    with tempfile.TemporaryDirectory() as tmp:
+        with patch.object(mickey, "VMS_DIR", Path(tmp) / "vms"):
+            assert mickey.get_agents() == []
+
+
+def test_get_agents_skips_dead():
+    """get_agents skips VMs whose processes are dead."""
+    mickey = _import_mickey()
+    with tempfile.TemporaryDirectory() as tmp:
+        vms = Path(tmp) / "vms"
+        vms.mkdir()
+        with patch.object(mickey, "VMS_DIR", vms):
+            (vms / "dead-vm").mkdir()
+            # PID 99999999 should not exist
+            (vms / "dead-vm" / "pid").write_text("99999999")
+            assert mickey.get_agents() == []
+
+
+def test_get_agents_finds_alive():
+    """get_agents finds VMs whose processes are alive."""
+    mickey = _import_mickey()
+    with tempfile.TemporaryDirectory() as tmp:
+        vms = Path(tmp) / "vms"
+        vms.mkdir()
+        with patch.object(mickey, "VMS_DIR", vms):
+            (vms / "alive-vm").mkdir()
+            # Use current PID (guaranteed alive)
+            (vms / "alive-vm" / "pid").write_text(str(os.getpid()))
+            assert mickey.get_agents() == ["alive-vm"]
+
+
+def test_get_agents_sorted():
+    """get_agents returns names in sorted order."""
+    mickey = _import_mickey()
+    with tempfile.TemporaryDirectory() as tmp:
+        vms = Path(tmp) / "vms"
+        vms.mkdir()
+        with patch.object(mickey, "VMS_DIR", vms):
+            for name in ["charlie", "alice", "bob"]:
+                (vms / name).mkdir()
+                (vms / name / "pid").write_text(str(os.getpid()))
+            assert mickey.get_agents() == ["alice", "bob", "charlie"]
 
 
 # ===== E2E tests with temp workspace =====
@@ -268,6 +392,17 @@ def test_am_failed_patch_creates_todo():
         fix_files = list(todos_dir.glob("fix-*.txt"))
         assert len(fix_files) == 1
         assert "Bad patch" in fix_files[0].read_text()
+
+
+# -- ls with no VMs directory --
+
+def test_ls_no_vms():
+    """ls shows message when no VMs exist."""
+    r = run(
+        [str(MICKEY), "ls"],
+        env={**os.environ, "HOME": tempfile.mkdtemp()},
+    )
+    assert "no VMs" in r.stdout
 
 
 if __name__ == "__main__":
