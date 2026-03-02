@@ -608,11 +608,27 @@ def cmd_whip(args):
         print("\rerror: -j requires a positive integer.", file=sys.stderr)
         sys.exit(1)
 
-    # Determine agents to use
+    # Determine agents to use — start stopped VMs automatically.
     all_agents = get_agents()
     if not all_agents:
-        print("\rno agents found. hire some first: mickey hire <name>")
-        return
+        hired = [
+            d.name
+            for d in sorted(VMS_DIR.iterdir())
+            if d.is_dir()
+        ] if VMS_DIR.is_dir() else []
+        if not hired:
+            print("\rno agents found. hire some first: mickey hire <name>")
+            return
+        for name in hired:
+            print(f"\rstarting stopped agent {name}...")
+            start_vm(name)
+        for name in hired:
+            wait_for_ssh(name)
+            print(f"\r  {name} ready.")
+        all_agents = get_agents()
+        if not all_agents:
+            print("\rerror: agents failed to start.", file=sys.stderr)
+            return
 
     if args.j is not None:
         if len(all_agents) < args.j:
@@ -666,6 +682,14 @@ def cmd_whip(args):
                             print(f"\r{n} died (exit {rc}), returned {wip.name} to todos/")
                         else:
                             print(f"\rreturned {wip.name} to todos/")
+                    # Clean workspace and docker images
+                    subprocess.run(
+                        ssh_cmd(n) + [
+                            "rm -rf ~/work/*"
+                            " && docker system prune -af --volumes 2>/dev/null"
+                        ],
+                        capture_output=True,
+                    )
                 wip, prompt, agent_type = pick_task(ws)
                 if prompt:
                     wip_files[n] = wip
