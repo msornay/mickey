@@ -2,6 +2,7 @@
 """Mickey - AI agent orchestrator."""
 
 import argparse
+import json
 import os
 import random
 import re
@@ -14,6 +15,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 AGENT_RULES = r"""# Agent Rules
 
@@ -139,6 +141,94 @@ def workspace() -> Path:
     return Path(os.environ.get("WORKSPACE_DIR", Path.home() / "src"))
 
 
+# --- Rate limit guard (claude-guard) ---
+
+GUARD_THRESHOLD_5H = 0.80
+GUARD_THRESHOLD_7D = 0.80
+GUARD_POLL_INTERVAL = 300  # seconds between rate limit checks
+MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+KEYCHAIN_SERVICE = "Claude Code-credentials"
+
+
+def _get_oauth_token():
+    """Retrieve OAuth access token from macOS Keychain.
+
+    Returns access_token or raises RuntimeError.
+    """
+    raw = subprocess.check_output(
+        ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+        stderr=subprocess.DEVNULL,
+        text=True,
+    ).strip()
+    creds = json.loads(raw)
+    oauth = creds.get("claudeAiOauth")
+    if not oauth or "accessToken" not in oauth:
+        raise RuntimeError("Keychain JSON missing claudeAiOauth.accessToken")
+    return oauth["accessToken"]
+
+
+def _fetch_rate_limits(access_token):
+    """Make a lightweight messages call and return (5h_util, 7d_util) floats.
+
+    Returns (None, None) when headers are absent.
+    """
+    body = json.dumps(
+        {
+            "model": "claude-sonnet-4-20250514",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+        }
+    ).encode()
+
+    req = Request(MESSAGES_URL, data=body, method="POST")
+    req.add_header("Authorization", f"Bearer {access_token}")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("anthropic-version", "2023-06-01")
+    req.add_header("anthropic-beta", "oauth-2025-04-20")
+    req.add_header("anthropic-dangerous-direct-browser-access", "true")
+
+    resp = urlopen(req)
+    headers = resp.headers
+
+    def _float(name):
+        v = headers.get(name)
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except ValueError:
+            return None
+
+    return (
+        _float("anthropic-ratelimit-unified-5h-utilization"),
+        _float("anthropic-ratelimit-unified-7d-utilization"),
+    )
+
+
+def check_rate_limit():
+    """Check whether we're rate-limited. Returns True if limited.
+
+    Any error (network, auth, parsing) is treated as rate-limited per user
+    instruction — claude-guard often errors out for weird reasons.
+    """
+    try:
+        token = _get_oauth_token()
+        util_5h, util_7d = _fetch_rate_limits(token)
+        if util_5h is not None and util_5h >= GUARD_THRESHOLD_5H:
+            print(f"\rguard: 5h utilization {util_5h:.0%} >= {GUARD_THRESHOLD_5H:.0%}")
+            return True
+        if util_7d is not None and util_7d >= GUARD_THRESHOLD_7D:
+            print(f"\rguard: 7d utilization {util_7d:.0%} >= {GUARD_THRESHOLD_7D:.0%}")
+            return True
+        pct_5h = f"{util_5h:.0%}" if util_5h is not None else "?"
+        pct_7d = f"{util_7d:.0%}" if util_7d is not None else "?"
+        print(f"\rguard: ok (5h={pct_5h}, 7d={pct_7d})")
+        return False
+    except Exception as exc:
+        print(f"\rguard: error ({exc}), treating as rate-limited")
+        return True
+
+
 # --- QEMU helpers ---
 
 
@@ -148,8 +238,7 @@ def ensure_mickey_dir():
     VMS_DIR.mkdir(exist_ok=True)
     if not SSH_KEY.exists():
         subprocess.run(
-            ["ssh-keygen", "-t", "ed25519", "-f", str(SSH_KEY),
-             "-N", "", "-q"],
+            ["ssh-keygen", "-t", "ed25519", "-f", str(SSH_KEY), "-N", "", "-q"],
             check=True,
         )
 
@@ -165,10 +254,7 @@ def find_edk2_code() -> str:
     for c in candidates:
         if c.exists():
             return str(c)
-    sys.exit(
-        "error: cannot find edk2-aarch64-code.fd. "
-        "Install qemu: brew install qemu"
-    )
+    sys.exit("error: cannot find edk2-aarch64-code.fd. Install qemu: brew install qemu")
 
 
 def allocate_port() -> int:
@@ -196,11 +282,16 @@ def ssh_cmd(name: str, extra_ssh_args=None) -> list:
     port = read_port(name)
     cmd = [
         "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
-        "-i", str(SSH_KEY),
-        "-p", str(port),
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "LogLevel=ERROR",
+        "-i",
+        str(SSH_KEY),
+        "-p",
+        str(port),
     ]
     if extra_ssh_args:
         cmd.extend(extra_ssh_args)
@@ -219,22 +310,36 @@ def start_vm(name: str):
 
     cmd = [
         "qemu-system-aarch64",
-        "-accel", "hvf",
-        "-cpu", "host",
-        "-M", "virt,highmem=on",
-        "-m", ram,
-        "-smp", cpus,
-        "-drive", f"file={edk2},if=pflash,format=raw,readonly=on",
-        "-drive", f"file={vm_dir}/vars.fd,if=pflash,format=raw",
-        "-drive", f"if=virtio,file={vm_dir}/disk.qcow2,format=qcow2",
-        "-netdev", f"user,id=net0,hostfwd=tcp::{port}-:22",
-        "-device", "virtio-net-pci,netdev=net0",
+        "-accel",
+        "hvf",
+        "-cpu",
+        "host",
+        "-M",
+        "virt,highmem=on",
+        "-m",
+        ram,
+        "-smp",
+        cpus,
+        "-drive",
+        f"file={edk2},if=pflash,format=raw,readonly=on",
+        "-drive",
+        f"file={vm_dir}/vars.fd,if=pflash,format=raw",
+        "-drive",
+        f"if=virtio,file={vm_dir}/disk.qcow2,format=qcow2",
+        "-netdev",
+        f"user,id=net0,hostfwd=tcp::{port}-:22",
+        "-device",
+        "virtio-net-pci,netdev=net0",
         "-virtfs",
         f"local,path={ws},mount_tag=workspace,security_model=none",
-        "-monitor", f"unix:{vm_dir}/monitor.sock,server,nowait",
-        "-pidfile", f"{vm_dir}/pid",
-        "-display", "none",
-        "-serial", f"file:{vm_dir}/console.log",
+        "-monitor",
+        f"unix:{vm_dir}/monitor.sock,server,nowait",
+        "-pidfile",
+        f"{vm_dir}/pid",
+        "-display",
+        "none",
+        "-serial",
+        f"file:{vm_dir}/console.log",
         "-daemonize",
     ]
     subprocess.run(cmd, check=True)
@@ -455,8 +560,9 @@ def get_agents() -> list:
     return agents
 
 
-def start_agent(name, prompt, ws, model, agent_type="developer", todo_file=None,
-                debug=False):
+def start_agent(
+    name, prompt, ws, model, agent_type="developer", todo_file=None, debug=False
+):
     """Start an agent in a background thread. Returns the thread."""
     rules = QA_RULES if agent_type == "qa" else AGENT_RULES
 
@@ -483,7 +589,7 @@ def start_agent(name, prompt, ws, model, agent_type="developer", todo_file=None,
         if todo_file:
             lines.append(f"export TODO_FILE={shlex.quote(todo_file)}")
         lines.append(
-            f'exec claude --dangerously-skip-permissions'
+            f"exec claude --dangerously-skip-permissions"
             f' --append-system-prompt "$(cat {guest_rules})"'
             f' -p "$(cat {guest_prompt})"'
         )
@@ -560,8 +666,14 @@ def cmd_hire(args):
     # Create CoW overlay disk
     subprocess.run(
         [
-            "qemu-img", "create", "-f", "qcow2",
-            "-b", str(base_img), "-F", "qcow2",
+            "qemu-img",
+            "create",
+            "-f",
+            "qcow2",
+            "-b",
+            str(base_img),
+            "-F",
+            "qcow2",
             str(vm_dir / "disk.qcow2"),
         ],
         check=True,
@@ -600,6 +712,35 @@ def cmd_hire(args):
     os.execvp("ssh", ssh_cmd(name, ["-t"]) + ["claude"])
 
 
+def _join_agents(threads, wip_files, ws):
+    """Join all running agent threads and handle their wip files."""
+    for n, t in list(threads.items()):
+        t.join()
+        if n in wip_files and wip_files[n]:
+            wip = wip_files.pop(n)
+            stamp_todo_header(ws, wip.name)
+            has_patch = any(
+                extract_todo(p) == wip.name
+                for p in (ws / "merge-queue").rglob("*.patch")
+            )
+            if has_patch:
+                print(f"\r{wip.name} has patch in merge-queue")
+            elif wip.exists():
+                rc = t.returncode
+                dest = ws / "todos" / wip.name
+                wip.rename(dest)
+                if rc and rc != 0:
+                    print(f"\r{n} died (exit {rc}), returned {wip.name} to todos/")
+                else:
+                    print(f"\rreturned {wip.name} to todos/")
+            subprocess.run(
+                ssh_cmd(n)
+                + ["rm -rf ~/work/* && docker system prune -af --volumes 2>/dev/null"],
+                capture_output=True,
+            )
+    threads.clear()
+
+
 def cmd_whip(args):
     ws = workspace()
     model = args.model
@@ -611,11 +752,11 @@ def cmd_whip(args):
     # Determine agents to use — start stopped VMs automatically.
     all_agents = get_agents()
     if not all_agents:
-        hired = [
-            d.name
-            for d in sorted(VMS_DIR.iterdir())
-            if d.is_dir()
-        ] if VMS_DIR.is_dir() else []
+        hired = (
+            [d.name for d in sorted(VMS_DIR.iterdir()) if d.is_dir()]
+            if VMS_DIR.is_dir()
+            else []
+        )
         if not hired:
             print("\rno agents found. hire some first: mickey hire <name>")
             return
@@ -644,6 +785,7 @@ def cmd_whip(args):
     threads = {}
     wip_files = {}  # agent_name -> wip_path
     last_am = time.monotonic()
+    last_guard = 0.0  # force check on first iteration
 
     lock(ws)
     try:
@@ -651,13 +793,30 @@ def cmd_whip(args):
             patches = max_patches_per_repo(ws)
             stale = time.monotonic() - last_am > 900
             if patches >= 2 or (patches > 0 and stale):
-                for t in threads.values():
-                    t.join()
-                threads.clear()
+                _join_agents(threads, wip_files, ws)
                 unlock(ws)
                 do_am(ws, push=True)
                 lock(ws)
                 last_am = time.monotonic()
+
+            # Rate limit guard — check at most every GUARD_POLL_INTERVAL
+            if not args.no_guard:
+                now = time.monotonic()
+                if now - last_guard >= GUARD_POLL_INTERVAL:
+                    if check_rate_limit():
+                        # Rate limited — join agents, flush patches, poll
+                        _join_agents(threads, wip_files, ws)
+                        unlock(ws)
+                        do_am(ws, push=True)
+                        last_am = time.monotonic()
+                        print("\rguard: waiting for rate limit to reset...")
+                        while True:
+                            time.sleep(GUARD_POLL_INTERVAL)
+                            if not check_rate_limit():
+                                break
+                        print("\rguard: rate limit cleared, resuming.")
+                        lock(ws)
+                    last_guard = time.monotonic()
 
             for n in agents:
                 if n in threads and threads[n].is_alive():
@@ -679,12 +838,15 @@ def cmd_whip(args):
                         dest = ws / "todos" / wip.name
                         wip.rename(dest)
                         if rc and rc != 0:
-                            print(f"\r{n} died (exit {rc}), returned {wip.name} to todos/")
+                            print(
+                                f"\r{n} died (exit {rc}), returned {wip.name} to todos/"
+                            )
                         else:
                             print(f"\rreturned {wip.name} to todos/")
                     # Clean workspace and docker images
                     subprocess.run(
-                        ssh_cmd(n) + [
+                        ssh_cmd(n)
+                        + [
                             "rm -rf ~/work/*"
                             " && docker system prune -af --volumes 2>/dev/null"
                         ],
@@ -710,6 +872,10 @@ def cmd_whip(args):
 
 
 def cmd_sh(args):
+    vm_dir = VMS_DIR / args.name
+    if not vm_dir.is_dir():
+        print(f"error: VM '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
     os.execvp("ssh", ssh_cmd(args.name, ["-t"]) + ["bash"])
 
 
@@ -766,7 +932,6 @@ def do_am(ws: Path, push: bool = False):
         if not (target / ".git").is_dir():
             print(f"\rwarning: {target} is not a git repo, skipping.")
             continue
-        subject = extract_subject(patch)
         print(f"\rapplying {patch.name} to {repo}...")
         result = subprocess.run(
             ["git", "am", "--empty=keep", str(patch)],
@@ -911,7 +1076,8 @@ def cmd_reset(args):
         try:
             subprocess.run(
                 ssh_cmd(name) + ["pkill", "-f", "claude"],
-                capture_output=True, timeout=5,
+                capture_output=True,
+                timeout=5,
             )
         except (OSError, subprocess.TimeoutExpired):
             pass
@@ -958,7 +1124,10 @@ def cmd_mkimage(args):
         print("downloading Ubuntu 24.04 arm64 cloud image...")
         subprocess.run(
             [
-                "curl", "-L", "-o", str(dl_path),
+                "curl",
+                "-L",
+                "-o",
+                str(dl_path),
                 "https://cloud-images.ubuntu.com/noble/current/"
                 "noble-server-cloudimg-arm64.img",
             ],
@@ -969,7 +1138,8 @@ def cmd_mkimage(args):
     print("creating base image...")
     shutil.copy2(str(dl_path), str(base_img))
     subprocess.run(
-        ["qemu-img", "resize", str(base_img), "40G"], check=True,
+        ["qemu-img", "resize", str(base_img), "40G"],
+        check=True,
     )
 
     # Create UEFI vars template
@@ -1029,9 +1199,15 @@ def cmd_mkimage(args):
     ci_iso = MICKEY_DIR / "cloud-init.iso"
     subprocess.run(
         [
-            "mkisofs", "-output", str(ci_iso), "-volid", "cidata",
-            "-joliet", "-rock",
-            str(ci_dir / "user-data"), str(ci_dir / "meta-data"),
+            "mkisofs",
+            "-output",
+            str(ci_iso),
+            "-volid",
+            "cidata",
+            "-joliet",
+            "-rock",
+            str(ci_dir / "user-data"),
+            str(ci_dir / "meta-data"),
         ],
         check=True,
     )
@@ -1041,17 +1217,28 @@ def cmd_mkimage(args):
     result = subprocess.run(
         [
             "qemu-system-aarch64",
-            "-accel", "hvf",
-            "-cpu", "host",
-            "-M", "virt,highmem=on",
-            "-m", "4096",
-            "-smp", "2",
-            "-drive", f"file={edk2},if=pflash,format=raw,readonly=on",
-            "-drive", f"file={base_vars},if=pflash,format=raw",
-            "-drive", f"if=virtio,file={base_img},format=qcow2",
-            "-drive", f"file={ci_iso},if=virtio,format=raw,readonly=on",
-            "-netdev", "user,id=net0",
-            "-device", "virtio-net-pci,netdev=net0",
+            "-accel",
+            "hvf",
+            "-cpu",
+            "host",
+            "-M",
+            "virt,highmem=on",
+            "-m",
+            "4096",
+            "-smp",
+            "2",
+            "-drive",
+            f"file={edk2},if=pflash,format=raw,readonly=on",
+            "-drive",
+            f"file={base_vars},if=pflash,format=raw",
+            "-drive",
+            f"if=virtio,file={base_img},format=qcow2",
+            "-drive",
+            f"file={ci_iso},if=virtio,format=raw,readonly=on",
+            "-netdev",
+            "user,id=net0",
+            "-device",
+            "virtio-net-pci,netdev=net0",
             "-nographic",
         ],
     )
@@ -1100,7 +1287,7 @@ def main():
         epilog="""\
 Commands:
   hire     <name>                          Create agent VM (interactive)
-  whip     [--model <m>] [-j N]            Send agents to work
+  whip     [--model <m>] [-j N] [--no-guard] Send agents to work
   sh       <name>                          Shell into agent VM
   ls                                       List agent VMs
   fire     <name>                          Remove agent VM
@@ -1120,8 +1307,10 @@ Commands:
     p_whip = sub.add_parser("whip", help="Send agents to work")
     p_whip.add_argument("--model", default=None)
     p_whip.add_argument("-j", type=int, default=None)
-    p_whip.add_argument("--debug", action="store_true",
-                        help="Show agent stdout/stderr")
+    p_whip.add_argument("--debug", action="store_true", help="Show agent stdout/stderr")
+    p_whip.add_argument(
+        "--no-guard", action="store_true", help="Disable rate limit guard"
+    )
     p_whip.set_defaults(func=cmd_whip)
 
     p_sh = sub.add_parser("sh", help="Shell into agent VM")

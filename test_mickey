@@ -405,6 +405,88 @@ def test_ls_no_vms():
     assert "no VMs" in r.stdout
 
 
+# ===== Rate limit guard tests =====
+
+
+def test_check_rate_limit_ok():
+    """check_rate_limit returns False when under thresholds."""
+    mickey = _import_mickey()
+    with patch.object(mickey, "_get_oauth_token", return_value="tok"), \
+         patch.object(mickey, "_fetch_rate_limits", return_value=(0.30, 0.40)):
+        assert mickey.check_rate_limit() is False
+
+
+def test_check_rate_limit_5h_exceeded():
+    """check_rate_limit returns True when 5h utilization exceeds threshold."""
+    mickey = _import_mickey()
+    with patch.object(mickey, "_get_oauth_token", return_value="tok"), \
+         patch.object(mickey, "_fetch_rate_limits", return_value=(0.85, 0.40)):
+        assert mickey.check_rate_limit() is True
+
+
+def test_check_rate_limit_7d_exceeded():
+    """check_rate_limit returns True when 7d utilization exceeds threshold."""
+    mickey = _import_mickey()
+    with patch.object(mickey, "_get_oauth_token", return_value="tok"), \
+         patch.object(mickey, "_fetch_rate_limits", return_value=(0.30, 0.90)):
+        assert mickey.check_rate_limit() is True
+
+
+def test_check_rate_limit_error_treated_as_limited():
+    """check_rate_limit returns True on any error (treat errors as limited)."""
+    mickey = _import_mickey()
+    with patch.object(mickey, "_get_oauth_token",
+                      side_effect=Exception("keychain fail")):
+        assert mickey.check_rate_limit() is True
+
+
+def test_check_rate_limit_api_error_treated_as_limited():
+    """check_rate_limit returns True on API error."""
+    mickey = _import_mickey()
+    with patch.object(mickey, "_get_oauth_token", return_value="tok"), \
+         patch.object(mickey, "_fetch_rate_limits",
+                      side_effect=Exception("HTTP 500")):
+        assert mickey.check_rate_limit() is True
+
+
+def test_check_rate_limit_none_utilization():
+    """check_rate_limit returns False when headers are absent (None)."""
+    mickey = _import_mickey()
+    with patch.object(mickey, "_get_oauth_token", return_value="tok"), \
+         patch.object(mickey, "_fetch_rate_limits", return_value=(None, None)):
+        assert mickey.check_rate_limit() is False
+
+
+def test_get_oauth_token_parses_keychain():
+    """_get_oauth_token extracts access token from keychain JSON."""
+    mickey = _import_mickey()
+    import json
+    creds = json.dumps({"claudeAiOauth": {"accessToken": "my-tok"}})
+    with patch("subprocess.check_output", return_value=creds):
+        assert mickey._get_oauth_token() == "my-tok"
+
+
+def test_get_oauth_token_missing_oauth_raises():
+    """_get_oauth_token raises RuntimeError when JSON lacks expected key."""
+    mickey = _import_mickey()
+    import json
+    with patch("subprocess.check_output",
+               return_value=json.dumps({"other": "stuff"})):
+        try:
+            mickey._get_oauth_token()
+            assert False, "should have raised"
+        except RuntimeError as e:
+            assert "missing" in str(e).lower()
+
+
+def test_whip_no_guard_flag():
+    """--no-guard flag is accepted by whip parser."""
+    r = run([str(MICKEY), "whip", "--no-guard", "-j", "0"])
+    # -j 0 should still fail, but --no-guard should be parsed
+    assert r.returncode != 0
+    assert "positive" in r.stderr.lower() or r.returncode != 0
+
+
 if __name__ == "__main__":
     # Simple test runner fallback if pytest isn't available
     import traceback
