@@ -648,12 +648,6 @@ def cmd_hire(args):
     name = args.name
     ensure_mickey_dir()
 
-    vm_dir = VMS_DIR / name
-    if vm_dir.exists():
-        print(f"error: VM '{name}' already exists.", file=sys.stderr)
-        sys.exit(1)
-    vm_dir.mkdir()
-
     base_img = MICKEY_DIR / "base.qcow2"
     base_vars = MICKEY_DIR / "base-vars.fd"
     if not base_img.exists():
@@ -662,6 +656,12 @@ def cmd_hire(args):
             file=sys.stderr,
         )
         sys.exit(1)
+
+    vm_dir = VMS_DIR / name
+    if vm_dir.exists():
+        print(f"error: VM '{name}' already exists.", file=sys.stderr)
+        sys.exit(1)
+    vm_dir.mkdir()
 
     # Create CoW overlay disk
     subprocess.run(

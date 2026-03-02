@@ -405,6 +405,21 @@ def test_ls_no_vms():
     assert "no VMs" in r.stdout
 
 
+# -- hire pre-validation --
+
+
+def test_hire_no_base_image_no_orphan():
+    """hire without base image should not leave orphan VM directory."""
+    with tempfile.TemporaryDirectory() as home:
+        env = {**os.environ, "HOME": home}
+        r = run([str(MICKEY), "hire", "testvm"], env=env)
+        assert r.returncode != 0
+        assert "base image not found" in r.stderr
+        vms = Path(home) / ".mickey" / "vms"
+        # No orphan directory should exist
+        assert not (vms / "testvm").exists()
+
+
 # ===== Rate limit guard tests =====
 
 
